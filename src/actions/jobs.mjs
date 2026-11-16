@@ -1,6 +1,11 @@
 // Local render jobs: the clips the page asks for, rendered by the installed boqo-clips
-// engine (tools/render.mjs --run <run> --n <list> [--brand <kit>]). No model and no network
-// are involved; one job runs at a time, as the engine itself expects.
+// engine (tools/render.mjs --run <run> --n <list> [--brand <kit>]). No model is involved;
+// one job runs at a time, as the engine itself expects.
+//
+// The skill's cleanup deletes the downloaded parts of the video once a run is rendered
+// (SKILL.md step 14), so rendering a clip later first fetches its seconds again the way the
+// skill's own "Redo one clip" does (fetch.mjs sections <url> --run <run> --n <list> >
+// sections.json, network only), and deletes them again afterwards.
 //
 // The engine takes the caption style only from a brand kit. For "this clip in another
 // style" the job writes a one-off kit into a scratch home and points BOQO_HOME at it, the
@@ -10,7 +15,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { statSafe, writeJson } from "../home.mjs";
+import { statSafe, readJson, writeJson } from "../home.mjs";
+import { runsLog } from "../store/clips.mjs";
 import { readRunFull } from "../store/clips.mjs";
 import { rawKit, brandsDir } from "../store/brands.mjs";
 
@@ -18,7 +24,7 @@ import { rawKit, brandsDir } from "../store/brands.mjs";
 export function clipsTools(env = process.env) {
   const root = env.BOQO_CLIPS_DIR || path.join(os.homedir(), ".boqo-clips");
   const tool = path.join(root, "tools", "render.mjs");
-  return statSafe(tool) ? { root, render: tool } : null;
+  return statSafe(tool) ? { root, render: tool, fetch: path.join(root, "tools", "fetch.mjs") } : null;
 }
 
 export function createJobs({ home, bus, log = () => {}, tools = clipsTools, runner = spawnNode }) {
@@ -27,7 +33,7 @@ export function createJobs({ home, bus, log = () => {}, tools = clipsTools, runn
   let seq = 0;
 
   function list() {
-    return [current, ...queue].filter(Boolean).map(({ id, runId, ns, style, kit, state, error }) => ({ id, runId, ns, style, kit, state, error }));
+    return [current, ...queue].filter(Boolean).map(({ id, runId, ns, style, kit, state, phase, error }) => ({ id, runId, ns, style, kit, state, phase, error }));
   }
 
   function add(spec) {
@@ -74,10 +80,29 @@ export function createJobs({ home, bus, log = () => {}, tools = clipsTools, runn
     const args = [job.tools.render, "--run", job.runDir, "--n", job.ns.join(",")];
     if (brand) args.push("--brand", brand);
     readRunFull(home, job.runId); // notes each clip's render and judgment now, so a re-render shows afterwards
-    log(`render ${job.runId} n=${job.ns.join(",")}${job.style ? ` style=${job.style}` : ""}`);
-    runner(args, { cwd: job.tools.root, env }, (code, stdout, stderr) => {
-      const { error, errors } = outcome(job.ns, code, stdout, stderr);
-      finish(job, error, scratch, errors);
+
+    const render = (fetched) => {
+      job.phase = "render";
+      bus.emit({ type: "jobs", jobs: list() });
+      log(`render ${job.runId} n=${job.ns.join(",")}${job.style ? ` style=${job.style}` : ""}`);
+      runner(args, { cwd: job.tools.root, env }, (code, stdout, stderr) => {
+        const { error, errors } = outcome(job.ns, code, stdout, stderr);
+        if (fetched) removeFetched(job.runDir, fetched);
+        finish(job, error, scratch, errors);
+      });
+    };
+
+    if (sectionsCover(job.runDir, job.ns)) return render(null);
+    const url = sourceUrl(home, job.runId, job.runDir);
+    if (!url) return finish(job, "The part of the video this clip needs isn’t on this computer, and the run doesn’t say where the video came from. Ask your agent to render it.", scratch);
+    job.phase = "fetch";
+    bus.emit({ type: "jobs", jobs: list() });
+    log(`fetch sections ${job.runId} n=${job.ns.join(",")}`);
+    runner([job.tools.fetch, "sections", url, "--run", job.runDir, "--n", job.ns.join(",")], { cwd: job.tools.root, env: { ...process.env, BOQO_HOME: home } }, (code, stdout, stderr) => {
+      const report = lastJson(stdout);
+      if (!report?.files) return finish(job, explainFetch(report?.error ?? lastLine(stderr)) || `Couldn’t download the part of the video (exit ${code}).`, scratch);
+      fs.writeFileSync(path.join(job.runDir, "sections.json"), JSON.stringify(report) + "\n");
+      render(report.files.map((x) => x.file));
     });
   }
 
@@ -109,6 +134,43 @@ export function outcome(ns, code, stdout, stderr) {
   if (report) return { error: null, errors };
   if (code === 0) return { error: null, errors };
   return { error: explain(lastLine(stderr)) || `The render stopped (exit ${code}).`, errors: {} };
+}
+
+/** Does <run>/sections.json hold a file, still on disk, covering each clip's seconds? */
+export function sectionsCover(runDir, ns) {
+  const sec = readJson(path.join(runDir, "sections.json"));
+  const rec = readJson(path.join(runDir, "clips.json"));
+  if (!Array.isArray(sec?.files) || !rec?.clips) return false;
+  return ns.every((n) => {
+    const row = rec.clips.find((r) => r.n === n);
+    if (!row) return false;
+    return sec.files.some((f) => typeof f.s === "number" && f.s <= row.start && f.e >= row.end && statSafe(path.isAbsolute(f.file) ? f.file : path.join(runDir, f.file)));
+  });
+}
+
+/** Where the run's video came from: runs.md's line for it, else the link yt-dlp recorded. */
+function sourceUrl(home, runId, runDir) {
+  const logged = runsLog(home).get(runId)?.url;
+  if (logged && /^https?:\/\//.test(logged)) return logged;
+  const info = readJson(path.join(runDir, "info.json"));
+  return typeof info?.webpage_url === "string" && /^https?:\/\//.test(info.webpage_url) ? info.webpage_url : null;
+}
+
+/** What the job downloaded goes again once the render is done, as the skill's own cleanup does. */
+function removeFetched(runDir, files) {
+  for (const f of files) {
+    const abs = path.isAbsolute(f) ? f : path.join(runDir, f);
+    if (path.dirname(abs) === runDir && /^(sec-\d+|whole)\.[a-z0-9]+$/i.test(path.basename(abs))) fs.rmSync(abs, { force: true });
+  }
+  fs.rmSync(path.join(runDir, "sections.json"), { force: true });
+}
+
+function explainFetch(msg) {
+  const m = String(msg ?? "").trim();
+  if (!m) return "";
+  if (/sign in|bot|confirm you|429|Too Many Requests/i.test(m)) return "YouTube refused the download for now. Try again later, or ask your agent.";
+  if (/unavailable|private|removed|not available/i.test(m)) return "The video isn’t available on YouTube any more, so this clip can’t be rendered again.";
+  return `Couldn’t download the part of the video: ${m.split("\n")[0].slice(0, 160)}`;
 }
 
 /** The engine's errors are written for the agent; the ones a person can act on get plain words. */

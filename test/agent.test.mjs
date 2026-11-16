@@ -97,3 +97,38 @@ test("the agent is told where the installed skill is, to use absolute paths, and
   const a = CLAUDE.args({ prompt: "hi", sessionId: "s", resume: false });
   assert.deepEqual(a.slice(a.indexOf("--permission-mode"), a.indexOf("--permission-mode") + 2), ["--permission-mode", "acceptEdits"]);
 });
+
+// A stand-in agent that, like Claude Code running a render in the background, leaves a child behind.
+test("Stop ends the agent and what it started, says so, and the page hears the turn start and end (#12)", { skip: process.platform === "win32" && "POSIX process groups", timeout: 20_000 }, async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "boqo-stop-"));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "boqo-bin-"));
+  const pidFile = path.join(bin, "child.pid");
+  fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh
+sleep 60 &
+echo $! > "${pidFile}"
+echo '{"type":"system","subtype":"init","session_id":"s-1"}'
+sleep 60
+`, { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${oldPath}`;
+  const seen = [];
+  const relay = createRelay({ home, localDir: path.join(home, "local"), bus: { emit: (m) => seen.push(m) }, settings: () => ({ allowedTools: [] }) });
+  try {
+    assert.equal(relay.send("run-x", "render it", { label: "Bakery · clip 2" }).ok, true);
+    assert.deepEqual(relay.busyInfo().label, "Bakery · clip 2");
+    for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+    const childPid = Number(fs.readFileSync(pidFile, "utf8"));
+    assert.equal(relay.stop(), true);
+    for (let i = 0; i < 200 && relay.busy(); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(relay.busy(), null);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.throws(() => process.kill(childPid, 0), /ESRCH/, "the background child outlived Stop");
+    assert.equal(relay.readThread("run-x").messages.at(-1).error, "Stopped.");
+    const turns = seen.filter((m) => m.type === "turn");
+    assert.equal(turns[0].busy.threadId, "run-x");
+    assert.equal(turns.at(-1).busy, null);
+    assert.equal(relay.stop(), false); // nothing left to stop
+  } finally {
+    process.env.PATH = oldPath;
+  }
+});

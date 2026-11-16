@@ -21,7 +21,7 @@ const MAX_BODY = 64_000;
 const DEFAULT_SETTINGS = {
   // What Claude Code may do without asking, since nobody is there to click Allow:
   // read files, run the skills' node tools and ffmpeg/yt-dlp, and boqo's MCP tools.
-  allowedTools: ["Read", "Glob", "Grep", "Bash(node:*)", "Bash(ffmpeg:*)", "Bash(ffprobe:*)", "Bash(yt-dlp:*)", "mcp__boqo"],
+  allowedTools: ["Read", "Glob", "Grep", "Bash(node:*)", "Bash(ffmpeg:*)", "Bash(ffprobe:*)", "Bash(yt-dlp:*)", "Bash(mkdir:*)", "Bash(ls:*)", "Bash(date:*)", "mcp__boqo"],
 };
 
 export async function startServer({ home, ports = PORTS, log = console.log, idleExit = true } = {}) {
@@ -93,7 +93,7 @@ export async function startServer({ home, ports = PORTS, log = console.log, idle
       if (p.startsWith("/api/watch/")) { const r = store.watch(home, decodeURIComponent(p.slice(11))); return send(res, r ? 200 : 404, r ?? { error: "not found" }); }
       if (p === "/api/brands") return send(res, 200, store.brands(home));
       if (p.startsWith("/api/thread/")) { const t = relay.readThread(p.slice(12)); return send(res, t ? 200 : 400, t ?? { error: "bad thread" }); }
-      if (p === "/api/state") return send(res, 200, { home, settings: publicSettings(), jobs: jobs.list(), busyThread: relay.busy() });
+      if (p === "/api/state") return send(res, 200, { home, settings: publicSettings(), jobs: jobs.list(), busy: relay.busyInfo() });
       if (p === "/media") return sendMedia(req, res, home, url.searchParams.get("p"));
     } catch (err) {
       log(`GET ${p} failed: ${err.message}`);

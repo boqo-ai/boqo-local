@@ -215,8 +215,8 @@ function clipOpen(r, c, job) {
   const local = !r.canRender ? `<p class="note">Rendering here needs the boqo-clips skill on this computer. Ask your agent instead.</p>`
     : c.rendered
       ? `<div class="row-acts"><label class="sr" for="st-${c.n}">Caption style</label><select class="sel" id="st-${c.n}" data-style-for="${c.n}"><option value="">Same captions</option>${styleOptions}</select>
-         <button class="btn" data-render="${c.n}" ${job ? "disabled" : ""}>${job ? "Rendering…" : "Re-render"}</button></div>`
-      : `<div class="row-acts"><button class="btn btn-p" data-render="${c.n}" ${job ? "disabled" : ""}>${job ? "Rendering…" : "Render This Clip"}</button><span class="note">On this computer, no credits.</span></div>`;
+         <button class="btn" data-render="${c.n}" ${job ? "disabled" : ""}>${job ? (job.phase === "fetch" ? "Downloading the part…" : "Rendering…") : "Re-render"}</button></div>`
+      : `<div class="row-acts"><button class="btn btn-p" data-render="${c.n}" ${job ? "disabled" : ""}>${job ? (job.phase === "fetch" ? "Downloading the part…" : "Rendering…") : "Render This Clip"}</button><span class="note">On this computer, no credits. If the part of the video is gone, it’s downloaded again first.</span></div>`;
   return `<div class="open" data-key="o-${c.n}">${player}<div class="open-b">
       ${c.why ? `<p class="quote">${c.judgmentStale ? "Before the re-render: " : ""}“${esc(c.why)}”</p>` : ""}
       <dl class="kv">${["Hook", "Flow", "Stands alone", "Value"].map((a, k) => (c.axes[k] != null ? `<dt>${a}</dt><dd>${c.axes[k]}</dd>` : "")).join("")}${ctx ? `<dt>Context</dt><dd>${ctx}</dd>` : ""}${c.start != null ? `<dt>From the source</dt><dd>${hms(c.start)} to ${hms(c.end)}</dd>` : ""}</dl>
@@ -293,12 +293,15 @@ const HINTS = {
 };
 
 function renderChat() {
-  const r = route(), tid = threadFor(r), t = S.threads[tid] ?? { messages: [] }, live = S.live[tid];
+  const r = route(), tid = threadFor(r), t = S.threads[tid] ?? { messages: [] };
+  // The running turn, known from /api/state on load and from "turn" events after: a page opened
+  // or reloaded mid-turn still knows it, and every view can stop it.
+  const busy = S.state?.busy ?? null, busyHere = busy?.threadId === tid, busyElsewhere = !!busy && !busyHere;
+  const live = S.live[tid] ?? (busyHere ? { text: "", tools: [] } : null);
   const info = S.state?.settings?.agent;
   const agent = info?.usable ? info : null;
   const ctx = chatContext(r);
   const about = r.view === "run" ? (S.run?.title ? `${S.run.title}${ctx?.clip ? ` · clip ${ctx.clip}` : ""}` : "") : r.view === "watch" ? (S.watch?.channel ?? "") : "Everything on this computer";
-  const busyElsewhere = S.state?.busyThread && S.state.busyThread !== tid;
   const hintKey = r.view === "run" ? (ctx?.clip ? "clip" : "run") : r.view;
 
   const msgs = t.messages.map((m, i) => m.role === "you"
@@ -311,11 +314,12 @@ function renderChat() {
 
   morph($("#chat"), `
     <div class="ch-top"><b>Your agent</b><span>${esc(about)}</span></div>
+    ${busy ? `<div class="ch-turn" role="status"><span class="spin agent" aria-hidden="true"></span><span class="t">Claude Code is working on ${esc(busy.label)}</span><button type="button" class="btn btn-q" data-chat-stop>Stop</button></div>` : ""}
     <div class="ch-log" id="chlog">${msgs}${streaming}${empty}</div>
     <div class="ch-in">
       <div class="ch-box"><label class="sr" for="chin">Message your agent</label><textarea id="chin" rows="1" placeholder="${agent ? `Message ${esc(agent.label)}` : "No agent found"}" ${agent ? "" : "disabled"}></textarea>
-        ${live ? `<button class="btn" data-chat-stop aria-label="Stop">${ic("stop")}</button>` : `<button class="btn btn-p" data-chat-send aria-label="Send" ${agent && !busyElsewhere ? "" : "disabled"}>${ic("send")}</button>`}</div>
-      <div class="ch-foot"><span>Claude Code</span><span>${busyElsewhere ? "Busy in another chat" : "Uses your Claude plan"}</span></div>
+        ${busyHere ? `<button class="btn" data-chat-stop aria-label="Stop">${ic("stop")}</button>` : `<button class="btn btn-p" data-chat-send aria-label="Send" ${agent && !busy ? "" : "disabled"}>${ic("send")}</button>`}</div>
+      <div class="ch-foot"><span>Claude Code</span><span>${busyElsewhere ? "Working in another chat" : "Uses your Claude plan"}</span></div>
     </div>`);
 }
 const toolsHtml = (tools) => (tools?.length ? `<div class="tools">${tools.slice(-4).map((x) => `<span>${esc(toolLabel(x))}</span>`).join("")}${tools.length > 4 ? `<span>and ${tools.length - 4} more steps</span>` : ""}</div>` : "");
@@ -367,6 +371,7 @@ function connect() {
       render();
     }
     if (msg.type === "chat") onChat(msg.threadId, msg.event);
+    if (msg.type === "turn") { if (S.state) S.state.busy = msg.busy; renderChat(); }
   };
   es.onerror = () => {}; // EventSource reconnects by itself
 }
@@ -374,7 +379,9 @@ function connect() {
 function onChat(tid, ev) {
   const t = (S.threads[tid] ??= { messages: [], busy: false });
   if (ev.kind === "user") t.messages.push({ role: "you", text: ev.text, at: ev.at });
-  if (ev.kind === "busy") { S.live[tid] = { text: "", tools: [] }; S.state && (S.state.busyThread = tid); }
+  if (ev.kind === "busy") S.live[tid] = { text: "", tools: [] };
+  // a page that opened mid-turn picks the reply up from wherever it is
+  if (!S.live[tid] && (ev.kind === "delta" || ev.kind === "text" || ev.kind === "tool")) S.live[tid] = { text: "", tools: [] };
   const live = S.live[tid];
   if (live && ev.kind === "delta") live.text += ev.text;
   if (live && ev.kind === "text") live.text += (live.text ? "\n\n" : "") + ev.text;
@@ -382,7 +389,7 @@ function onChat(tid, ev) {
   if (ev.kind === "end") {
     t.messages.push({ role: "agent", text: ev.text, tools: ev.tools, costUsd: ev.costUsd, error: ev.error, agent: "Claude Code" });
     delete S.live[tid];
-    if (S.state) S.state.busyThread = null;
+    if (S.state) S.state.busy = null;
   }
   if (tid === threadFor()) { renderChat(); scrollChat(ev.kind === "user"); }
 }
@@ -418,7 +425,11 @@ document.addEventListener("click", async (e) => {
   if (hint) { const box = $("#chin"); if (box) { box.value = hint.dataset.hint; box.focus(); box.setSelectionRange(box.value.length, box.value.length); } return; }
   if (t.closest("[data-focus-chat]")) { $("#chin")?.focus(); return; }
   if (t.closest("[data-chat-send]")) { sendChat(); return; }
-  if (t.closest("[data-chat-stop]")) { await post("/api/thread-stop", {}); return; }
+  if (t.closest("[data-chat-stop]")) {
+    const r = await post("/api/thread-stop", {});
+    toast(r.stopped ? "Stopping Claude Code and anything it started…" : "Nothing is running.");
+    return;
+  }
 });
 document.addEventListener("keydown", (e) => {
   if (e.target.id === "chin" && e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }

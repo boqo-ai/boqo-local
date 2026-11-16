@@ -8,16 +8,30 @@ import { createJobs, outcome, explain } from "../src/actions/jobs.mjs";
 import { resolveJob, run as readRunPage } from "../src/store/index.mjs";
 
 /** A stand-in engine: answers on stdout the way tools/render.mjs does. */
-function setup(reply = () => ({ code: 0, stdout: JSON.stringify({ rendered: [], failed: [] }) })) {
+function setup(reply = () => ({ code: 0, stdout: JSON.stringify({ rendered: [], failed: [] }) }), fetchReply = null) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "boqo-jobs-"));
   const ids = makeHome(home);
   const calls = [];
+  const fetches = [];
   const emitted = [];
   const jobs = createJobs({
     home,
     bus: { emit: (m) => emitted.push(m) },
-    tools: () => ({ root: "/opt/boqo-clips", render: "/opt/boqo-clips/tools/render.mjs" }),
+    tools: () => ({ root: "/opt/boqo-clips", render: "/opt/boqo-clips/tools/render.mjs", fetch: "/opt/boqo-clips/tools/fetch.mjs" }),
     runner: (args, opts, done) => {
+      if (args[1] === "sections") {
+        // like fetch.mjs sections: one file per clip, covering its seconds, listed on stdout
+        fetches.push(args);
+        const run = args[args.indexOf("--run") + 1];
+        const rec = JSON.parse(fs.readFileSync(path.join(run, "clips.json"), "utf8"));
+        const files = args[args.indexOf("--n") + 1].split(",").map(Number).map((n, i) => {
+          const row = rec.clips.find((r) => r.n === n), file = path.join(run, `sec-${i}.mp4`);
+          fs.writeFileSync(file, "x");
+          return { pick: i, file, offset: 1, s: row.start - 1, e: row.end + 1 };
+        });
+        const r = fetchReply ? fetchReply(args) : { code: 0, stdout: JSON.stringify({ files }) };
+        return setImmediate(() => done(r.code, r.stdout ?? "", r.stderr ?? ""));
+      }
       const kitDir = opts.env.BOQO_HOME !== home ? path.join(opts.env.BOQO_HOME, "brands", args.at(-1)) : null;
       calls.push({ args, home: opts.env.BOQO_HOME, kit: kitDir ? JSON.parse(fs.readFileSync(path.join(kitDir, "brand.json"), "utf8")) : null, logo: kitDir ? fs.existsSync(path.join(kitDir, "logo.png")) : null });
       const r = reply(args);
@@ -30,7 +44,7 @@ function setup(reply = () => ({ code: 0, stdout: JSON.stringify({ rendered: [], 
       setImmediate(() => done(r.code, r.stdout ?? "", r.stderr ?? ""));
     },
   });
-  return { home, ids, jobs, calls, emitted };
+  return { home, ids, jobs, calls, fetches, emitted };
 }
 const settle = () => new Promise((r) => setTimeout(r, 30));
 const lastJob = (emitted) => emitted.filter((m) => m.type === "job").at(-1).job;
@@ -127,6 +141,40 @@ test("media URLs carry the file's modification time, so a re-render isn't served
   const later = new Date(Date.now() + 60_000);
   fs.utimesSync(file, later, later);
   assert.notEqual(readRunPage(home, ids.doneName).clips[0].videoV, before.videoV);
+});
+
+test("a clip whose part was cleaned up: the part is fetched from the run's link, rendered, then deleted again", async () => {
+  const { home, ids, jobs, calls, fetches, emitted } = setup();
+  const runDir = path.join(home, "boqo-clips", "runs", ids.doneName);
+  assert.equal(fs.existsSync(path.join(runDir, "sections.json")), false);
+  jobs.add(resolveJob(home, { run: ids.doneName, n: [11, 12] }));
+  await settle();
+  assert.equal(fetches.length, 1);
+  assert.deepEqual(fetches[0].slice(1), ["sections", "https://www.youtube.com/watch?v=lt48-bakery", "--run", runDir, "--n", "11,12"]);
+  assert.equal(calls.length, 1); // then the render
+  assert.equal(lastJob(emitted).state, "done");
+  assert.equal(fs.existsSync(path.join(runDir, "sections.json")), false);
+  assert.equal(fs.existsSync(path.join(runDir, "sec-0.mp4")), false);
+});
+
+test("parts already on disk are not fetched again", async () => {
+  const { home, ids, jobs, fetches, calls } = setup();
+  const runDir = path.join(home, "boqo-clips", "runs", ids.doneName);
+  fs.writeFileSync(path.join(runDir, "sec-0.mp4"), "x");
+  fs.writeFileSync(path.join(runDir, "sections.json"), JSON.stringify({ files: [{ pick: 0, file: path.join(runDir, "sec-0.mp4"), offset: 1, s: 140, e: 190 }] }));
+  jobs.add(resolveJob(home, { run: ids.doneName, n: [11] })); // clip 11 is 150..183 s
+  await settle();
+  assert.equal(fetches.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(fs.existsSync(path.join(runDir, "sections.json")), true); // not ours to delete
+});
+
+test("a refused download fails the job in plain words, and nothing renders", async () => {
+  const { home, ids, jobs, calls, emitted } = setup(undefined, () => ({ code: 1, stdout: JSON.stringify({ error: "ERROR: [youtube] lt48: Sign in to confirm you’re not a bot" }) }));
+  jobs.add(resolveJob(home, { run: ids.doneName, n: [11] }));
+  await settle();
+  assert.equal(calls.length, 0);
+  assert.match(lastJob(emitted).error, /YouTube refused the download/);
 });
 
 test("without the skill installed, the page is told to ask the agent", () => {

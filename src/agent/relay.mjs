@@ -77,9 +77,13 @@ export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
 
     const args = CLAUDE.args({ prompt: text, sessionId: meta.sessionId, resume, system: systemPrompt(home, context), allowedTools: settings().allowedTools });
     log(`claude ${resume ? "resume" : "start"} thread=${threadId}`);
-    const child = spawn(exe, args, { cwd: home, env: process.env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true });
-    running = { threadId, child };
+    // Its own process group on macOS and Linux, so Stop can end everything the agent started
+    // in the background too (a render, a download), not just `claude` itself.
+    const child = spawn(exe, args, { cwd: home, env: process.env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true, detached: !isWin });
+    const turn = { threadId, child, label: context?.label ?? "your boqo files", startedAt: at, stopped: false };
+    running = turn;
     bus.emit({ type: "chat", threadId, event: { kind: "busy", agent: CLAUDE.label } });
+    bus.emit({ type: "turn", busy: busyInfo() });
 
     let streamed = "", tools = [], final = null;
     const onEvent = (ev) => {
@@ -97,12 +101,14 @@ export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
     child.stderr.on("data", (d) => { errTail = (errTail + d).slice(-2000); });
 
     const finish = (code) => {
-      if (running?.child !== child) return;
+      if (running !== turn) return;
       running = null;
+      if (turn.stopped) killTree(child, "SIGKILL"); // anything left in the group once claude is gone
       const textOut = (final?.text || streamed).trim();
-      const error = final?.error ?? (code !== 0 && !textOut ? lastMeaningfulLine(errTail) || `Claude Code stopped (exit ${code})` : null);
+      const error = turn.stopped ? "Stopped." : final?.error ?? (code !== 0 && !textOut ? lastMeaningfulLine(errTail) || `Claude Code stopped (exit ${code})` : null);
       append(threadId, { role: "agent", agent: CLAUDE.label, text: textOut, tools, costUsd: final?.costUsd ?? null, error, at: new Date().toISOString() });
       bus.emit({ type: "chat", threadId, event: { kind: "end", text: textOut, tools, costUsd: final?.costUsd ?? null, error } });
+      bus.emit({ type: "turn", busy: null });
       bus.emit({ type: "changed" }); // the agent may have rendered or posted something
     };
     child.on("close", finish);
@@ -110,13 +116,31 @@ export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
     return { ok: true };
   }
 
+  /** Stop the turn and everything it started: SIGINT to the group first, SIGKILL if it lingers. */
   function stop() {
     if (!running) return false;
-    try { running.child.kill(isWin ? undefined : "SIGINT"); } catch { /* already gone */ }
+    const turn = running;
+    turn.stopped = true;
+    killTree(turn.child, "SIGINT");
+    setTimeout(() => { if (running === turn) killTree(turn.child, "SIGKILL"); }, 4000).unref();
     return true;
   }
 
-  return { readThread, send, stop, busy: () => running?.threadId ?? null };
+  function busyInfo() {
+    return running ? { threadId: running.threadId, label: running.label, startedAt: running.startedAt } : null;
+  }
+
+  return { readThread, send, stop, busy: () => running?.threadId ?? null, busyInfo };
+}
+
+/** Signal a process and its descendants: the process group on POSIX, `taskkill /T` on Windows. */
+export function killTree(child, signal) {
+  if (!child?.pid) return;
+  if (isWin) {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+    return;
+  }
+  try { process.kill(-child.pid, signal); } catch { /* the group is gone */ }
 }
 
 function lastMeaningfulLine(s) {

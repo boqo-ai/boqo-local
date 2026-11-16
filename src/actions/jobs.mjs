@@ -10,7 +10,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { statSafe, readJson, writeJson, localDir } from "../home.mjs";
+import { statSafe, writeJson } from "../home.mjs";
+import { readRunFull } from "../store/clips.mjs";
 import { rawKit, brandsDir } from "../store/brands.mjs";
 
 /** Where boqo-clips' code is installed (INSTALL.md clones it to ~/.boqo-clips). */
@@ -72,12 +73,10 @@ export function createJobs({ home, bus, log = () => {}, tools = clipsTools, runn
     }
     const args = [job.tools.render, "--run", job.runDir, "--n", job.ns.join(",")];
     if (brand) args.push("--brand", brand);
-    const before = rowsOf(job.runDir, job.ns); // to tell a re-render from a first render afterwards
+    readRunFull(home, job.runId); // notes each clip's render and judgment now, so a re-render shows afterwards
     log(`render ${job.runId} n=${job.ns.join(",")}${job.style ? ` style=${job.style}` : ""}`);
     runner(args, { cwd: job.tools.root, env }, (code, stdout, stderr) => {
       const { error, errors } = outcome(job.ns, code, stdout, stderr);
-      const ok = job.ns.filter((n) => !errors[n] && !error);
-      recordRerenders(home, job.runId, ok.filter((n) => before.get(n)?.rendered), before);
       finish(job, error, scratch, errors);
     });
   }
@@ -135,28 +134,6 @@ function lastJson(text) {
   return null;
 }
 const lastLine = (t) => String(t ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !/^at\s/.test(l) && !/^node:/.test(l)).at(-1) ?? "";
-
-/** clips.json rows for these clips, before the render: whether each was rendered, and its judgment. */
-function rowsOf(runDir, ns) {
-  const rec = readJson(path.join(runDir, "clips.json"));
-  const out = new Map();
-  for (const r of rec?.clips ?? []) if (ns.includes(r.n)) out.set(r.n, { rendered: !!r.rendered, judgment: r.judgment ?? null });
-  return out;
-}
-
-/**
- * The engine keeps a clip's stranger judgment when it re-renders it. Note each local re-render
- * with the judgment it had, so the page can say the judgment is from before, until the agent
- * judges the clip again (the judgment then differs from the one recorded here).
- */
-export function recordRerenders(home, runId, ns, before) {
-  if (!ns.length) return;
-  const file = path.join(localDir(home), "rerenders.json");
-  const all = readJson(file) ?? {};
-  const run = (all[runId] ??= {});
-  for (const n of ns) run[n] = { at: new Date().toISOString(), judgment: JSON.stringify(before.get(n)?.judgment ?? null) };
-  writeJson(file, all);
-}
 
 function spawnNode(args, opts, done) {
   const child = spawn(process.execPath, args, { ...opts, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });

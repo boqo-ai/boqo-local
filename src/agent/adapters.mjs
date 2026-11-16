@@ -31,7 +31,9 @@ export const CLAUDE = {
    * Tools the skill needs are allowed up front, because nobody is there to click Allow.
    */
   args({ prompt, sessionId, resume, system, allowedTools }) {
-    const a = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+    // acceptEdits: file edits the skill needs (selection.json, clips.json) are accepted inside the
+    // working folder, which the relay sets to the boqo home; anything else still needs the allow-list.
+    const a = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "acceptEdits"];
     a.push(...(resume ? ["--resume", sessionId] : ["--session-id", sessionId]));
     if (system) a.push("--append-system-prompt", system);
     if (allowedTools?.length) a.push("--allowedTools", ...allowedTools);

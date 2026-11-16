@@ -3,7 +3,8 @@
 // (contract: boqo-clips p0b, SKILL.md steps 2-7 and engine/clips-record.mjs).
 import fs from "node:fs";
 import path from "node:path";
-import { readJson, statSafe, listDirs, localDir } from "../home.mjs";
+import { readJson, statSafe, listDirs } from "../home.mjs";
+import { noteClips } from "./seen.mjs";
 import { mediaRel } from "../security.mjs";
 
 export const RENDER_FIRST = 10;
@@ -65,7 +66,9 @@ export function clipRow(home, dir, r, i) {
     score: typeof r.score === "number" ? Math.round(r.score) : null,
     band: typeof r.score === "number" ? band(r.score) : null,
     axes: ["hook", "flow", "standalone", "value"].map((k) => (typeof axes[k] === "number" ? Math.round(axes[k]) : null)),
-    replayPct: r.replay?.pct ?? null,
+    // replay.pct is the clip's place on the most-replayed curve, 0..1, higher = more replayed.
+    // Shown the way the engine shows it (engine/boqo/handbook-outcomes.mjs): "top N%", never 0.
+    replayTop: typeof r.replay?.pct === "number" ? Math.max(1, Math.round((1 - r.replay.pct) * 100)) : null,
     judgment: r.judgment?.overall ?? null,
     why: r.judgment?.why ?? null,
     standalone: r.standalone?.outcome ?? null,
@@ -153,13 +156,11 @@ export function readRunFull(home, name) {
   const summary = readRun(home, name);
   if (!summary) return null;
   const record = readJson(path.join(summary.dir, "clips.json"));
-  const rerenders = (readJson(path.join(localDir(home), "rerenders.json")) ?? {})[name] ?? {};
-  const clips = (record?.clips ?? []).map((r, i) => {
-    const row = clipRow(home, summary.dir, r, i);
+  const rows = (record?.clips ?? []).map((r, i) => clipRow(home, summary.dir, r, i));
+  const stale = noteClips(home, name, rows.filter((r) => r.rendered).map((r) => ({ n: r.n, videoV: r.videoV, judgment: r.judgmentRaw })));
+  const clips = rows.map((row) => {
     row.grades = row.axes.map((v) => (v == null ? null : grade(v)));
-    // Still the judgment it had when this page re-rendered it: it's about the old render.
-    const rr = rerenders[row.n];
-    row.judgmentStale = !!rr && row.judgment != null && JSON.stringify(row.judgmentRaw) === rr.judgment;
+    row.judgmentStale = stale.has(row.n);
     delete row.file;
     delete row.judgmentRaw;
     return row;

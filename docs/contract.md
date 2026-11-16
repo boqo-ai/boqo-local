@@ -44,8 +44,13 @@ time. For another caption style, a one-off kit is written to a scratch home and
 - No per-clip post record in boqo-clips, only a count in runs.md (proposal E2).
 - No chat-rate history in boqo-sniper: the server samples `chatPerSec` while it runs, so a
   chart starts when the page opens (proposal E3, `metrics.jsonl`).
-- `render.mjs` keeps a clip's old stranger judgment after a re-render. The page labels it
-  "before the re-render" until the agent judges the clip again (`<home>/local/rerenders.json`).
+- `render.mjs` keeps a clip's old stranger judgment after a re-render, whoever re-renders it.
+  The page remembers each clip's video version and judgment (`<home>/local/seen.json`) and
+  labels a judgment that outlived its render "before the re-render" until the clip is judged again.
+- `replay.pct` is 0..1 (higher = more replayed); the page shows `top max(1, round((1 − pct) × 100))%`
+  like the engine (`engine/boqo/handbook-outcomes.mjs`).
+- In Claude Code's print mode, commands with shell variables (the `"$HOME/.boqo-clips/tools/…"`
+  form SKILL.md uses) can't be approved; the chat asks the agent for absolute paths.
 - `render.mjs` reports on stdout (`{error}`, or `{rendered, failed}` with exit 0 when some
   clips failed); the job runner reads that, not the exit code alone.
 - Moving a clip's start or end has no model-free command; the chat asks the agent.

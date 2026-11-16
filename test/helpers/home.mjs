@@ -52,7 +52,7 @@ export function makeHome(home, { now = new Date(), media, rendered = 10 } = {}) 
   w(path.join(done, "upload-01.json"), { url: "https://example.invalid/upload?sig=SECRET" });
   const rows = CLIPS.map(([score, ax, pct, j, outcome, title, start, len, why], i) => {
     const n = i + 1, isRendered = i < rendered;
-    const row = { n, start, end: start + len, title, title_alternatives: [], hook: "", score, axes: { hook: ax[0], flow: ax[1], standalone: ax[2], value: ax[3] }, emphasis_words: [], standalone: { v: 1, outcome }, replay: { pct, mean: 0.5 }, judgment: isRendered && j != null ? { overall: j, why, annotation: {} } : null, panels: null, rendered: isRendered, file: null, notes: [] };
+    const row = { n, start, end: start + len, title, title_alternatives: [], hook: "", score, axes: { hook: ax[0], flow: ax[1], standalone: ax[2], value: ax[3] }, emphasis_words: [], standalone: { v: 1, outcome }, replay: { pct: 1 - pct / 100, mean: 0.5 }, judgment: isRendered && j != null ? { overall: j, why, annotation: {} } : null, panels: null, rendered: isRendered, file: null, notes: [] };
     if (isRendered) {
       row.file = `out/clip-${pad(n)}.mp4`; row.thumb = `out/clip-${pad(n)}.jpg`; row.seconds = len; row.window = { start, end: start + len };
       put(path.join(done, row.file), "mp4", i); put(path.join(done, row.thumb), "jpg", i);

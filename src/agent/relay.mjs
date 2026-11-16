@@ -6,7 +6,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { CLAUDE, lineParser } from "./adapters.mjs";
-import { ensureDir, readJson, writeJson } from "../home.mjs";
+import { ensureDir, readJson, writeJson, statSafe } from "../home.mjs";
+import os from "node:os";
 
 const isWin = process.platform === "win32";
 
@@ -123,11 +124,26 @@ function lastMeaningfulLine(s) {
   return lines.at(-1)?.slice(0, 200) ?? "";
 }
 
+/**
+ * The skills' code, where INSTALL.md puts it (~/.boqo-<skill>), or BOQO_CLIPS_DIR for boqo-clips.
+ * Measured 2026-11-16: without this, an agent asked for a re-render searched the home folder for
+ * the skill and stopped when the searches needed approval.
+ */
+export function installedSkills(env = process.env) {
+  return ["boqo-clips", "boqo-channel", "boqo-sniper"].map((name) => {
+    const root = name === "boqo-clips" && env.BOQO_CLIPS_DIR ? env.BOQO_CLIPS_DIR : path.join(os.homedir(), `.${name}`);
+    const skill = path.join(root, "skills", name, "SKILL.md");
+    return statSafe(skill) ? { name, root, skill } : null;
+  }).filter(Boolean);
+}
+
 /** The standing instructions for a dashboard turn. Short: the page shows the clips itself. */
 export function systemPrompt(home, ctx) {
   const lines = [
     "The person is talking to you from the boqo dashboard on their computer, not the terminal.",
-    `Their boqo files are in ${home}. Follow the boqo skill that made the files for anything you change (its SKILL.md).`,
+    `Their boqo files are in ${home}. Follow the boqo skill that made the files for anything you change.`,
+    ...installedSkills().map((s) => `The ${s.name} skill is installed at ${s.root}: its instructions are ${s.skill}, its tools are in ${path.join(s.root, "tools")}.`),
+    "Write commands with absolute paths and no shell variables ($HOME, ${…}): commands with variables can't be approved here, so they fail.",
     "Answer briefly, in plain sentences. The dashboard already shows the clips, scores and progress, so don't repeat lists or tables.",
     "Posting follows the skill's posting rule; a request typed here is the person's own yes for exactly what they asked.",
   ];

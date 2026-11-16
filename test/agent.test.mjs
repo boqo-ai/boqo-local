@@ -80,3 +80,20 @@ test("the standing instructions name the run and the clip", () => {
   assert.match(s, /#2 "Oven"/);
   assert.match(s, /240s to 282s/);
 });
+
+test("the agent is told where the installed skill is, to use absolute paths, and edits are accepted in the home", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "boqo-skill-"));
+  fs.mkdirSync(path.join(root, "skills", "boqo-clips"), { recursive: true });
+  fs.writeFileSync(path.join(root, "skills", "boqo-clips", "SKILL.md"), "# skill\n");
+  const old = process.env.BOQO_CLIPS_DIR;
+  process.env.BOQO_CLIPS_DIR = root;
+  try {
+    const s = systemPrompt("/h", null);
+    assert.ok(s.includes(path.join(root, "skills", "boqo-clips", "SKILL.md")));
+    assert.match(s, /absolute paths and no shell variables/);
+  } finally {
+    if (old === undefined) delete process.env.BOQO_CLIPS_DIR; else process.env.BOQO_CLIPS_DIR = old;
+  }
+  const a = CLAUDE.args({ prompt: "hi", sessionId: "s", resume: false });
+  assert.deepEqual(a.slice(a.indexOf("--permission-mode"), a.indexOf("--permission-mode") + 2), ["--permission-mode", "acceptEdits"]);
+});

@@ -125,3 +125,18 @@ test("chat context and render jobs are built from ids, never from paths the page
   assert.equal(job.kit, "longtable");
   assert.equal(job.style, "neon");
 });
+
+test("replayed: 'top N%' computed the way the engine shows it, never top 0%", () => {
+  const home = tmp();
+  const { doneName, done } = makeHome(home);
+  const f = path.join(done, "clips.json");
+  const rec = JSON.parse(fs.readFileSync(f, "utf8"));
+  rec.clips[0].replay = { pct: 0.29, mean: 0.6 }; // a real value from a boqo-clips p0b run: the engine prints "top 71%"
+  rec.clips[1].replay = { pct: 1, mean: 1 };
+  rec.clips[2].replay = null;
+  fs.writeFileSync(f, JSON.stringify(rec));
+  const clips = store.run(home, doneName).clips;
+  assert.equal(clips[0].replayTop, 71);
+  assert.equal(clips[1].replayTop, 1);
+  assert.equal(clips[2].replayTop, null);
+});

@@ -21,6 +21,12 @@ function setup(reply = () => ({ code: 0, stdout: JSON.stringify({ rendered: [], 
       const kitDir = opts.env.BOQO_HOME !== home ? path.join(opts.env.BOQO_HOME, "brands", args.at(-1)) : null;
       calls.push({ args, home: opts.env.BOQO_HOME, kit: kitDir ? JSON.parse(fs.readFileSync(path.join(kitDir, "brand.json"), "utf8")) : null, logo: kitDir ? fs.existsSync(path.join(kitDir, "logo.png")) : null });
       const r = reply(args);
+      // like a real render: the clip files are written again
+      const run = args[args.indexOf("--run") + 1];
+      for (const n of args[args.indexOf("--n") + 1].split(",")) {
+        const file = path.join(run, "out", `clip-${String(n).padStart(2, "0")}.mp4`);
+        if (fs.existsSync(file)) { const t = new Date(Date.now() + 5000); fs.utimesSync(file, t, t); }
+      }
       setImmediate(() => done(r.code, r.stdout ?? "", r.stderr ?? ""));
     },
   });
@@ -101,6 +107,16 @@ test("a local re-render marks the old stranger judgment as from before, until th
   fs.writeFileSync(f, JSON.stringify(rec));
   page = readRunPage(home, ids.doneName);
   assert.equal(page.clips.find((c) => c.n === 2).judgmentStale, false);
+});
+
+test("a re-render done outside the page (by the agent, say) also marks the old judgment", () => {
+  const { home, ids } = setup();
+  assert.equal(readRunPage(home, ids.doneName).clips[3].judgmentStale, false); // the page sees clip 4 as it is
+  const file = path.join(home, "boqo-clips", "runs", ids.doneName, "out", "clip-04.mp4");
+  const t = new Date(Date.now() + 9000);
+  fs.utimesSync(file, t, t); // rendered again; clips.json's judgment untouched
+  assert.equal(readRunPage(home, ids.doneName).clips[3].judgmentStale, true);
+  assert.equal(readRunPage(home, ids.doneName).clips[3].judgmentStale, true); // and it stays so until judged again
 });
 
 test("media URLs carry the file's modification time, so a re-render isn't served from cache (#3)", () => {

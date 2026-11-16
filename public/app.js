@@ -197,7 +197,7 @@ const jobFor = (runId, n) => S.jobs.find((j) => j.runId === runId && j.ns.includ
 function clipRow(r, c) {
   const open = S.open[r.id] === c.n, job = jobFor(r.id, c.n);
   const keeps = c.judgment == null ? "" : c.judgmentStale ? `keeps watching ${c.judgment}/5 before the re-render` : `keeps watching ${c.judgment}/5`;
-  const meta = [c.band, c.replayPct != null ? `replayed top ${c.replayPct}%` : "", keeps, c.seconds ? mmss(c.seconds) : ""].filter(Boolean).join(" · ");
+  const meta = [c.band, c.replayTop != null ? `replayed top ${c.replayTop}%` : "", keeps, c.seconds ? mmss(c.seconds) : ""].filter(Boolean).join(" · ");
   return `<button type="button" class="cl${c.rendered ? "" : " pending"}" data-clip="${c.n}" aria-expanded="${open}" data-key="c-${c.n}">
       <span class="rk">${c.n}</span>${still(c.thumb, "", c.thumbV)}
       <span style="min-width:0"><span class="t">${esc(c.title)}</span><span class="m">${esc(meta)}</span></span>
@@ -257,6 +257,34 @@ function viewWatch(w) {
 }
 
 /* ---------- chat ---------- */
+/**
+ * The agent writes markdown. Escape everything first, then turn the few marks it uses into
+ * HTML: fenced code, inline code, bold, bullet and numbered lists, paragraphs. Nothing the
+ * agent writes can become markup of its own.
+ */
+export function md(text) {
+  const blocks = String(text ?? "").replace(/\r/g, "").split(/\n```[^\n]*\n([\s\S]*?)\n```(?:\n|$)/);
+  let out = "";
+  blocks.forEach((b, i) => {
+    if (i % 2 === 1) { out += `<pre>${esc(b)}</pre>`; return; }
+    const inline = (t) => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+    let list = null;
+    const close = () => { if (list) { out += `</${list}>`; list = null; } };
+    for (const para of b.split(/\n{2,}/)) {
+      for (const line of para.split("\n")) {
+        const ul = /^\s*[-*]\s+(.*)$/.exec(line), ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+        if (ul || ol) {
+          const kind = ul ? "ul" : "ol";
+          if (list !== kind) { close(); out += `<${kind}>`; list = kind; }
+          out += `<li>${inline((ul ?? ol)[1])}</li>`;
+        } else if (line.trim()) { close(); out += `<p>${inline(line)}</p>`; }
+      }
+      close();
+    }
+  });
+  return out;
+}
+
 const HINTS = {
   feed: ["Clip this video: ", "What did I post this week?"],
   run: ["Render the rest", "Why is the first clip first?"],
@@ -275,8 +303,8 @@ function renderChat() {
 
   const msgs = t.messages.map((m, i) => m.role === "you"
     ? `<div class="m-you" data-key="h${i}">${esc(m.text)}</div>`
-    : `<div class="m-ag" data-key="h${i}">${toolsHtml(m.tools)}${m.text ? `<div>${esc(m.text)}</div>` : ""}${m.error ? `<div class="err">${esc(m.error)}</div>` : ""}${m.costUsd ? `<span class="cost">$${m.costUsd.toFixed(2)} on your ${esc(m.agent ?? "agent")} plan</span>` : ""}</div>`).join("");
-  const streaming = live ? `<div class="m-ag" data-key="live">${toolsHtml(live.tools)}${live.text ? `<div>${esc(live.text)}</div>` : ""}<div class="working"><span class="spin agent"></span>${live.text ? "" : esc(agent?.label ?? "Your agent")} working</div></div>` : "";
+    : `<div class="m-ag" data-key="h${i}">${toolsHtml(m.tools)}${m.text ? `<div class="md">${md(m.text)}</div>` : ""}${m.error ? `<div class="err">${esc(m.error)}</div>` : ""}${m.costUsd ? `<span class="cost">$${m.costUsd.toFixed(2)} on your ${esc(m.agent ?? "agent")} plan</span>` : ""}</div>`).join("");
+  const streaming = live ? `<div class="m-ag" data-key="live">${toolsHtml(live.tools)}${live.text ? `<div class="md">${md(live.text)}</div>` : ""}<div class="working"><span class="spin agent"></span>${live.text ? "" : esc(agent?.label ?? "Your agent")} working</div></div>` : "";
   const empty = !t.messages.length && !live
     ? `<div class="ch-hint">${agent ? `<span>Ask Claude Code to change, render or post anything here. It runs on this computer.</span>${(HINTS[hintKey] ?? []).map((h) => `<button data-hint="${esc(h)}">${esc(h)}</button>`).join("")}` : `<span>${info?.installed ? "Claude Code is installed through npm, which the dashboard can’t start safely on Windows. Install it with its own installer, then reload this page." : "The chat needs Claude Code on this computer. Install it, then reload this page. Everything else here works without it."}</span>`}</div>`
     : "";

@@ -157,7 +157,11 @@ a.it:hover,button.it:hover{background:var(--fill-4)}
 .ch-top span{display:block;font:400 .75rem/1.4 var(--font);color:var(--label-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ch-log{flex:1;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:14px}
 .m-you{align-self:flex-end;max-width:88%;background:var(--fill-3);border-radius:14px 14px 4px 14px;padding:8px 12px;font-size:.875rem;white-space:pre-wrap;word-break:break-word}
-.m-ag{font-size:.875rem;white-space:pre-wrap;word-break:break-word;display:flex;flex-direction:column;gap:6px}
+.m-ag{font-size:.875rem;word-break:break-word;display:flex;flex-direction:column;gap:6px}
+.md p{margin:0 0 8px}.md p:last-child{margin-bottom:0}
+.md ul,.md ol{margin:0 0 8px;padding-left:18px}.md li{margin:2px 0}
+.md code{font:500 .8125rem/1.3 var(--mono);background:var(--fill-3);padding:1px 4px;border-radius:4px}
+.md pre{margin:0 0 8px;padding:8px 10px;background:var(--fill-3);border-radius:var(--r-md);font:400 .75rem/1.5 var(--mono);white-space:pre-wrap;overflow-x:auto}
 .m-ag .tools{display:flex;flex-direction:column;gap:2px;font:400 .75rem/1.4 var(--font);color:var(--label-3)}
 .m-ag .tools span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .m-ag .cost{font:400 .6875rem/1 var(--font);color:var(--label-3)}

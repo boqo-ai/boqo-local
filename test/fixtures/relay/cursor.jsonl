@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","cwd":"/home/someone/.boqo","session_id":"id-1","model":"Auto Balance","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with exactly the word: ok"}]},"session_id":"id-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"id-1","timestamp_ms":1794834043976}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"id-1"}
+{"type":"result","subtype":"success","duration_ms":8207,"duration_api_ms":8207,"is_error":false,"result":"ok","session_id":"id-1","request_id":"id-2","usage":{"inputTokens":4,"outputTokens":4,"cacheReadTokens":8289,"cacheWriteTokens":18730}}

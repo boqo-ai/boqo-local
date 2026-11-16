@@ -1,0 +1,26 @@
+{
+  "name": "boqo-local",
+  "version": "0.1.0",
+  "description": "The local boqo dashboard: what the boqo skills are doing on this computer, and a chat with your own agent about it.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "boqo-local": "bin/boqo-local.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/boqo-local.mjs start",
+    "demo": "node scripts/demo.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

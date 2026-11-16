@@ -29,7 +29,7 @@ function clipsFor(home, folder, momentName) {
   const dir = path.join(sniperDir(home), "clips", folder, momentName);
   const rec = readJson(path.join(dir, "clips.json"));
   if (!rec?.clips?.length) return [];
-  return rec.clips.map((r, i) => clipRow(home, dir, r, i)).filter((c) => c.rendered).map(({ file, ...c }) => c);
+  return rec.clips.map((r, i) => clipRow(home, dir, r, i)).filter((c) => c.rendered).map(({ file, judgmentRaw, ...c }) => c);
 }
 
 function readMoments(home, folder, sessionDir) {
@@ -50,6 +50,7 @@ function readMoments(home, folder, sessionDir) {
       // clipped: a rendered clip exists; picking: the agent took it and hasn't finished; listed: waiting
       state: best ? "clipped" : taken ? "picking" : "listed",
       thumb: best?.thumb ?? null,
+      thumbV: best?.thumbV ?? null,
       video: best?.video ?? null,
       clips,
     };

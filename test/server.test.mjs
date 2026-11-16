@@ -47,7 +47,7 @@ test("writes need the token and this server's own origin", async () => {
   assert.equal((await req("POST", "/api/job", { body, headers: { "Content-Type": "application/json" } })).status, 403);
   assert.equal((await req("POST", "/api/job", { body, headers: { "X-Boqo-Token": "wrong", "Content-Type": "application/json" } })).status, 403);
   assert.equal((await req("POST", "/api/job", { body, headers: { "X-Boqo-Token": srv.token, Origin: "https://evil.example" } })).status, 403);
-  const ok = await req("POST", "/api/settings", { body: {}, headers: { "X-Boqo-Token": srv.token, Origin: `http://127.0.0.1:${srv.port}` } });
+  const ok = await req("POST", "/api/thread-stop", { body: {}, headers: { "X-Boqo-Token": srv.token, Origin: `http://127.0.0.1:${srv.port}` } });
   assert.equal(ok.status, 200);
 });
 
@@ -88,6 +88,25 @@ test("the JSON the page reads", async () => {
   assert.equal((await req("GET", "/api/run/..%2F..%2Fetc")).status, 404);
   const watch = JSON.parse((await req("GET", `/api/watch/${ids.watchId}`)).body);
   assert.equal(watch.channel, "nova_plays");
+});
+
+test("an oversized body gets 413 and the request ends (#2)", async () => {
+  const big = { text: "x".repeat(70_000) };
+  const r = await req("POST", "/api/thread/home", { body: big, headers: { "X-Boqo-Token": srv.token, "Content-Type": "application/json" } }).catch((e) => ({ status: e.code }));
+  assert.ok(r.status === 413 || r.status === "ECONNRESET" || r.status === "EPIPE", String(r.status));
+  assert.equal((await req("GET", "/api/feed")).status, 200);
+});
+
+// A regression here crashes the server inside the test process; the timeout makes that a failure, not a hang.
+test("a media file that can't be read doesn't stop the server (#2)", { timeout: 10_000, skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const rel = `boqo-clips/runs/${ids.doneName}/out/clip-03.mp4`;
+  fs.chmodSync(path.join(home, rel), 0o000); // passes the check, then fails to open
+  try {
+    await req("GET", `/media?p=${encodeURIComponent(rel)}`).catch(() => null);
+    assert.equal((await req("GET", "/api/feed")).status, 200);
+  } finally {
+    fs.chmodSync(path.join(home, rel), 0o644);
+  }
 });
 
 test("server.json records where it runs, without the token", () => {

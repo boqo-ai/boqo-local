@@ -27,22 +27,22 @@ It stops by itself after 30 minutes with no page open and nothing running.
 - **A run**: every clip in boqo's order with its score, the four sub-scores, how much
   viewers replay the part, the stranger judgment and a player. Render a clip that was
   picked but not rendered, or re-render one in another caption style.
-- **The chat**: messages go to your agent on this computer (Claude Code, Codex or Cursor)
-  with the run and the selected clip as context. The reply, the steps the agent took and
-  the cost come back into the page.
+- **The chat**: messages go to Claude Code on this computer, with the run and the selected
+  clip as context. The reply, the steps it took and the cost come back into the page. The
+  rest of the page works without Claude Code.
 
 ## Requirements
 
 - Node 20 or newer. No npm dependencies.
 - For local renders: boqo-clips installed (`~/.boqo-clips`, or `BOQO_CLIPS_DIR`).
-- For the chat: Claude Code, Codex or Cursor on your PATH. On Windows, an agent installed
-  through npm (a `.cmd` shim) can't be started without a shell, so use its own installer.
+- For the chat: Claude Code on your PATH. On Windows, a Claude Code installed through npm (a
+  `.cmd` shim) can't be started without a shell, so use its own installer.
 
 ## What runs where
 
 | Part | Who does it |
 |---|---|
-| Picking and scoring clips, judging them, posting | Your agent, following the skill. The chat sends it your request, and each message uses your agent's plan (about $0.20 to $0.30 for a short Claude Code turn, measured 2026-11-16). |
+| Picking and scoring clips, judging them, posting | Your agent, following the skill. The chat sends your request to Claude Code, and each message uses your Claude plan (about $0.20 to $0.30 for a short turn, measured 2026-11-16). |
 | Rendering a clip, another caption style | This computer, through the boqo-clips engine (`tools/render.mjs`). No model, no credits. |
 | Reading what happened | This app, from the skills' files in `$BOQO_HOME` (else `~/.boqo`). The skills don't depend on it. What it reads is in [docs/contract.md](docs/contract.md). |
 
@@ -55,9 +55,8 @@ Its own files (settings, chat threads, `server.json`) live in `<home>/local/`.
   The token is only in the served page, never on disk. No CORS.
 - Serves only video and images inside the home, after symlinks are resolved. JSON with
   signed upload URLs and config files never leaves the server.
-- Starts your agent without a shell. Claude Code gets an allow-list (read files, `node`,
-  `ffmpeg`, `yt-dlp`, the boqo MCP tools); Codex runs in its `workspace-write` sandbox;
-  Cursor only answers unless you let it run commands.
+- Starts Claude Code without a shell, with an allow-list: read files, `node`, `ffmpeg`,
+  `yt-dlp`, and the boqo MCP tools.
 
 ## Demo
 

@@ -37,7 +37,7 @@ function dayLabel(iso) {
   if (diff === -1) return "Tomorrow";
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
-const media = (p) => `/media?p=${encodeURIComponent(p)}`;
+const media = (p, v) => `/media?p=${encodeURIComponent(p)}${v ? `&v=${v}` : ""}`;
 
 /* ---------- server ---------- */
 async function api(path) {
@@ -116,8 +116,8 @@ function steps(list) {
     return `<div class="sl-r ${s.state} ${s.who}" data-key="${s.key}"><span class="sl-i">${icon}</span><span class="n">${esc(s.label)}</span><span class="v">${right}</span></div>${bar}`;
   }).join("")}</div>`;
 }
-const still = (thumb, alt = "") => (thumb ? `<img class="still" src="${media(thumb)}" alt="${esc(alt)}" loading="lazy">` : '<span class="still none"></span>');
-const strip = (top) => `<div class="strip">${top.map((c) => `<div class="sc">${still(c.thumb, c.title)}<b>${c.score ?? ""}</b><span>${esc(c.title)}</span></div>`).join("")}</div>`;
+const still = (thumb, alt = "", v) => (thumb ? `<img class="still" src="${media(thumb, v)}" alt="${esc(alt)}" loading="lazy">` : '<span class="still none"></span>');
+const strip = (top) => `<div class="strip">${top.map((c) => `<div class="sc">${still(c.thumb, c.title, c.thumbV)}<b>${c.score ?? ""}</b><span>${esc(c.title)}</span></div>`).join("")}</div>`;
 function spark(series, w = 400, h = 36) {
   if (!series?.length || series.length < 2) return "";
   const vals = series.map((p) => p.v), max = Math.max(10, ...vals), st = w / (vals.length - 1);
@@ -196,9 +196,10 @@ const jobFor = (runId, n) => S.jobs.find((j) => j.runId === runId && j.ns.includ
 
 function clipRow(r, c) {
   const open = S.open[r.id] === c.n, job = jobFor(r.id, c.n);
-  const meta = [c.band, c.replayPct != null ? `replayed top ${c.replayPct}%` : "", c.judgment != null ? `keeps watching ${c.judgment}/5` : "", c.seconds ? mmss(c.seconds) : ""].filter(Boolean).join(" · ");
+  const keeps = c.judgment == null ? "" : c.judgmentStale ? `keeps watching ${c.judgment}/5 before the re-render` : `keeps watching ${c.judgment}/5`;
+  const meta = [c.band, c.replayPct != null ? `replayed top ${c.replayPct}%` : "", keeps, c.seconds ? mmss(c.seconds) : ""].filter(Boolean).join(" · ");
   return `<button type="button" class="cl${c.rendered ? "" : " pending"}" data-clip="${c.n}" aria-expanded="${open}" data-key="c-${c.n}">
-      <span class="rk">${c.n}</span>${still(c.thumb)}
+      <span class="rk">${c.n}</span>${still(c.thumb, "", c.thumbV)}
       <span style="min-width:0"><span class="t">${esc(c.title)}</span><span class="m">${esc(meta)}</span></span>
       <span class="s">${job ? '<span class="spin" aria-label="Rendering"></span>' : ""}${c.score ?? ""}</span>
     </button>${open ? clipOpen(r, c, job) : ""}`;
@@ -208,8 +209,8 @@ function clipOpen(r, c, job) {
   const err = S.jobErrors[`${r.id}:${c.n}`];
   const ctx = { stands: "Opens on its own", bridged: "Opens on its own, with a bridge line", context: "Needs the episode", fails: "Doesn’t stand alone" }[c.standalone] ?? "";
   const player = c.video
-    ? `<video data-keep data-key="v-${c.n}-${esc(c.video)}" src="${media(c.video)}" ${c.thumb ? `poster="${media(c.thumb)}"` : ""} controls playsinline preload="metadata"></video>`
-    : still(c.thumb);
+    ? `<video data-keep data-key="v-${c.n}-${c.videoV}" src="${media(c.video, c.videoV)}" ${c.thumb ? `poster="${media(c.thumb, c.thumbV)}"` : ""} controls playsinline preload="metadata"></video>`
+    : still(c.thumb, "", c.thumbV);
   const styleOptions = (r.styles ?? []).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join("");
   const local = !r.canRender ? `<p class="note">Rendering here needs the boqo-clips skill on this computer. Ask your agent instead.</p>`
     : c.rendered
@@ -217,7 +218,7 @@ function clipOpen(r, c, job) {
          <button class="btn" data-render="${c.n}" ${job ? "disabled" : ""}>${job ? "Rendering…" : "Re-render"}</button></div>`
       : `<div class="row-acts"><button class="btn btn-p" data-render="${c.n}" ${job ? "disabled" : ""}>${job ? "Rendering…" : "Render This Clip"}</button><span class="note">On this computer, no credits.</span></div>`;
   return `<div class="open" data-key="o-${c.n}">${player}<div class="open-b">
-      ${c.why ? `<p class="quote">“${esc(c.why)}”</p>` : ""}
+      ${c.why ? `<p class="quote">${c.judgmentStale ? "Before the re-render: " : ""}“${esc(c.why)}”</p>` : ""}
       <dl class="kv">${["Hook", "Flow", "Stands alone", "Value"].map((a, k) => (c.axes[k] != null ? `<dt>${a}</dt><dd>${c.axes[k]}</dd>` : "")).join("")}${ctx ? `<dt>Context</dt><dd>${ctx}</dd>` : ""}${c.start != null ? `<dt>From the source</dt><dd>${hms(c.start)} to ${hms(c.end)}</dd>` : ""}</dl>
       ${local}
       ${err ? `<p class="note err">${esc(err)}</p>` : ""}
@@ -265,9 +266,8 @@ const HINTS = {
 
 function renderChat() {
   const r = route(), tid = threadFor(r), t = S.threads[tid] ?? { messages: [] }, live = S.live[tid];
-  const st = S.state?.settings;
-  const agents = st?.agents ?? [];
-  const agent = agents.find((a) => a.id === st?.agent);
+  const info = S.state?.settings?.agent;
+  const agent = info?.usable ? info : null;
   const ctx = chatContext(r);
   const about = r.view === "run" ? (S.run?.title ? `${S.run.title}${ctx?.clip ? ` · clip ${ctx.clip}` : ""}` : "") : r.view === "watch" ? (S.watch?.channel ?? "") : "Everything on this computer";
   const busyElsewhere = S.state?.busyThread && S.state.busyThread !== tid;
@@ -278,7 +278,7 @@ function renderChat() {
     : `<div class="m-ag" data-key="h${i}">${toolsHtml(m.tools)}${m.text ? `<div>${esc(m.text)}</div>` : ""}${m.error ? `<div class="err">${esc(m.error)}</div>` : ""}${m.costUsd ? `<span class="cost">$${m.costUsd.toFixed(2)} on your ${esc(m.agent ?? "agent")} plan</span>` : ""}</div>`).join("");
   const streaming = live ? `<div class="m-ag" data-key="live">${toolsHtml(live.tools)}${live.text ? `<div>${esc(live.text)}</div>` : ""}<div class="working"><span class="spin agent"></span>${live.text ? "" : esc(agent?.label ?? "Your agent")} working</div></div>` : "";
   const empty = !t.messages.length && !live
-    ? `<div class="ch-hint">${agent ? `<span>Ask ${esc(agent.label)} to change, render or post anything here. It runs on this computer.</span>${(HINTS[hintKey] ?? []).map((h) => `<button data-hint="${esc(h)}">${esc(h)}</button>`).join("")}` : `<span>No agent found on this computer. Install Claude Code, Codex or Cursor, then reload this page.</span>`}</div>`
+    ? `<div class="ch-hint">${agent ? `<span>Ask Claude Code to change, render or post anything here. It runs on this computer.</span>${(HINTS[hintKey] ?? []).map((h) => `<button data-hint="${esc(h)}">${esc(h)}</button>`).join("")}` : `<span>${info?.installed ? "Claude Code is installed through npm, which the dashboard can’t start safely on Windows. Install it with its own installer, then reload this page." : "The chat needs Claude Code on this computer. Install it, then reload this page. Everything else here works without it."}</span>`}</div>`
     : "";
 
   morph($("#chat"), `
@@ -287,8 +287,7 @@ function renderChat() {
     <div class="ch-in">
       <div class="ch-box"><label class="sr" for="chin">Message your agent</label><textarea id="chin" rows="1" placeholder="${agent ? `Message ${esc(agent.label)}` : "No agent found"}" ${agent ? "" : "disabled"}></textarea>
         ${live ? `<button class="btn" data-chat-stop aria-label="Stop">${ic("stop")}</button>` : `<button class="btn btn-p" data-chat-send aria-label="Send" ${agent && !busyElsewhere ? "" : "disabled"}>${ic("send")}</button>`}</div>
-      <div class="ch-foot">${agents.length > 1 ? `<label><span class="sr">Agent</span><select data-agent>${agents.map((a) => `<option value="${a.id}"${a.id === st.agent ? " selected" : ""}>${esc(a.label)}</option>`).join("")}</select></label>` : `<span>${esc(agent?.label ?? "")}</span>`}
-        <span>${busyElsewhere ? "Busy in another chat" : "Uses your agent’s plan"}</span></div>
+      <div class="ch-foot"><span>Claude Code</span><span>${busyElsewhere ? "Busy in another chat" : "Uses your Claude plan"}</span></div>
     </div>`);
 }
 const toolsHtml = (tools) => (tools?.length ? `<div class="tools">${tools.slice(-4).map((x) => `<span>${esc(toolLabel(x))}</span>`).join("")}${tools.length > 4 ? `<span>and ${tools.length - 4} more steps</span>` : ""}</div>` : "");
@@ -319,7 +318,7 @@ async function sendChat() {
   const text = box?.value.trim();
   if (!text) return;
   const r = await post(`/api/thread/${threadFor()}`, { text, context: chatContext() });
-  if (!r.ok) { toast(r.error === "busy" ? "Your agent is still answering another message." : "Couldn’t reach your agent."); return; }
+  if (!r.ok) { toast(r.error === "busy" ? "Claude Code is still answering another message." : r.error ?? "Couldn’t reach Claude Code."); return; }
   box.value = ""; box.style.height = "";
 }
 
@@ -331,8 +330,14 @@ function connect() {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === "changed") { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => load(false), 150); }
     if (msg.type === "jobs") { S.jobs = msg.jobs; render(); }
-    if (msg.type === "job" && msg.job.error) { for (const n of msg.job.ns) S.jobErrors[`${msg.job.runId}:${n}`] = msg.job.error; render(); }
-    if (msg.type === "job" && !msg.job.error) { for (const n of msg.job.ns) delete S.jobErrors[`${msg.job.runId}:${n}`]; }
+    if (msg.type === "job") {
+      const { runId, ns, error, errors = {} } = msg.job;
+      for (const n of ns) {
+        const e = error ?? errors[n];
+        if (e) S.jobErrors[`${runId}:${n}`] = e; else delete S.jobErrors[`${runId}:${n}`];
+      }
+      render();
+    }
     if (msg.type === "chat") onChat(msg.threadId, msg.event);
   };
   es.onerror = () => {}; // EventSource reconnects by itself
@@ -347,7 +352,7 @@ function onChat(tid, ev) {
   if (live && ev.kind === "text") live.text += (live.text ? "\n\n" : "") + ev.text;
   if (live && ev.kind === "tool") live.tools.push({ name: ev.name, detail: ev.detail });
   if (ev.kind === "end") {
-    t.messages.push({ role: "agent", text: ev.text, tools: ev.tools, costUsd: ev.costUsd, error: ev.error, agent: S.state?.settings?.agents?.find((a) => a.id === S.state.settings.agent)?.label });
+    t.messages.push({ role: "agent", text: ev.text, tools: ev.tools, costUsd: ev.costUsd, error: ev.error, agent: "Claude Code" });
     delete S.live[tid];
     if (S.state) S.state.busyThread = null;
   }
@@ -386,13 +391,6 @@ document.addEventListener("click", async (e) => {
   if (t.closest("[data-focus-chat]")) { $("#chin")?.focus(); return; }
   if (t.closest("[data-chat-send]")) { sendChat(); return; }
   if (t.closest("[data-chat-stop]")) { await post("/api/thread-stop", {}); return; }
-});
-document.addEventListener("change", async (e) => {
-  if (e.target.matches("[data-agent]")) {
-    const r = await post("/api/settings", { agent: e.target.value });
-    if (r.ok && S.state) S.state.settings = r;
-    renderChat();
-  }
 });
 document.addEventListener("keydown", (e) => {
   if (e.target.id === "chin" && e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendChat(); }

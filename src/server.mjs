@@ -1,6 +1,6 @@
 // The local server: 127.0.0.1 only, one per computer, serves the page, the readers'
-// JSON, allowlisted media, a Server-Sent Events stream, and three write endpoints
-// (chat, local render jobs, settings), each behind the session token.
+// JSON, allowlisted media, a Server-Sent Events stream, and two write endpoints
+// (the chat, local render jobs), each behind the session token.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { localDir as localDirOf, ensureDir, readJson, writeJson } from "./home.mjs";
 import { newToken, hostAllowed, originAllowed, tokenMatches, SECURITY_HEADERS, resolveMedia } from "./security.mjs";
 import { createBus, watchHome } from "./events.mjs";
-import { createRelay, detectAgents } from "./agent/relay.mjs";
+import { createRelay, detectAgent } from "./agent/relay.mjs";
 import { createJobs } from "./actions/jobs.mjs";
 import * as store from "./store/index.mjs";
 
@@ -17,11 +17,11 @@ const STATIC = { "/app.js": "text/javascript", "/app.css": "text/css", "/morph.j
 export const PORTS = [4177, 4178, 4179, 4180, 4181, 4182, 4183, 4184, 4185, 4186];
 const IDLE_MS = 30 * 60 * 1000;
 
+const MAX_BODY = 64_000;
 const DEFAULT_SETTINGS = {
-  agent: null, // set to the first agent found on first start
+  // What Claude Code may do without asking, since nobody is there to click Allow:
+  // read files, run the skills' node tools and ffmpeg/yt-dlp, and boqo's MCP tools.
   allowedTools: ["Read", "Glob", "Grep", "Bash(node:*)", "Bash(ffmpeg:*)", "Bash(ffprobe:*)", "Bash(yt-dlp:*)", "mcp__boqo"],
-  codexSandbox: "workspace-write",
-  cursorForce: false,
 };
 
 export async function startServer({ home, ports = PORTS, log = console.log, idleExit = true } = {}) {
@@ -29,10 +29,8 @@ export async function startServer({ home, ports = PORTS, log = console.log, idle
   const token = newToken();
   const bus = createBus();
   const settingsFile = path.join(local, "settings.json");
-  const agents = detectAgents();
+  const agent = detectAgent();
   const settings = () => ({ ...DEFAULT_SETTINGS, ...(readJson(settingsFile) ?? {}) });
-  const firstUsable = agents.find((a) => a.usable);
-  if (!settings().agent && firstUsable) writeJson(settingsFile, { ...settings(), agent: firstUsable.id });
 
   const relay = createRelay({ home, localDir: local, bus, settings, log });
   const jobs = createJobs({ home, bus, log });
@@ -42,11 +40,16 @@ export async function startServer({ home, ports = PORTS, log = console.log, idle
     res.writeHead(code, { ...SECURITY_HEADERS, "Content-Type": type, "Cache-Control": "no-store" });
     res.end(type.startsWith("application/json") ? JSON.stringify(body) : body);
   };
+  /** The JSON body, null when it isn't JSON, or TOO_BIG; it always settles, even when the client goes away. */
+  const TOO_BIG = Symbol("too big");
   const readBody = (req) => new Promise((resolve) => {
-    let b = "";
+    let b = "", done = false;
+    const settle = (v) => { if (!done) { done = true; resolve(v); } };
     req.setEncoding("utf8");
-    req.on("data", (c) => { b += c; if (b.length > 64_000) req.destroy(); });
-    req.on("end", () => { try { resolve(JSON.parse(b || "{}")); } catch { resolve(null); } });
+    req.on("data", (c) => { b += c; if (b.length > MAX_BODY) { settle(TOO_BIG); req.pause(); } });
+    req.on("end", () => { try { settle(JSON.parse(b || "{}")); } catch { settle(null); } });
+    req.on("error", () => settle(null));
+    req.on("close", () => settle(null));
   });
 
   let port = 0;
@@ -59,6 +62,7 @@ export async function startServer({ home, ports = PORTS, log = console.log, idle
     if (req.method === "POST") {
       if (!originAllowed(req.headers.origin, port) || !tokenMatches(req.headers["x-boqo-token"], token)) return send(res, 403, { error: "token" });
       const body = await readBody(req);
+      if (body === TOO_BIG) { res.setHeader("Connection", "close"); return send(res, 413, { error: "too big" }); }
       if (!body) return send(res, 400, { error: "json" });
       try {
         let m;
@@ -71,13 +75,6 @@ export async function startServer({ home, ports = PORTS, log = console.log, idle
         if (p === "/api/job") {
           const r = jobs.add(store.resolveJob(home, body));
           return send(res, r.error ? 400 : 200, r);
-        }
-        if (p === "/api/settings") {
-          const next = { ...settings() };
-          if (body.agent && agents.some((a) => a.id === body.agent)) next.agent = body.agent;
-          if (typeof body.cursorForce === "boolean") next.cursorForce = body.cursorForce;
-          writeJson(settingsFile, next);
-          return send(res, 200, publicSettings());
         }
       } catch (err) {
         log(`POST ${p} failed: ${err.message}`);
@@ -106,8 +103,7 @@ export async function startServer({ home, ports = PORTS, log = console.log, idle
   });
 
   function publicSettings() {
-    const s = settings();
-    return { agent: s.agent, agents, cursorForce: s.cursorForce };
+    return { agent };
   }
 
   port = await listenOnFirstFree(server, ports);
@@ -153,11 +149,23 @@ function sendMedia(req, res, home, rel) {
     if (!(start >= 0 && end < m.size && start <= end)) { res.writeHead(416, { ...head, "Content-Range": `bytes */${m.size}` }); return res.end(); }
     res.writeHead(206, { ...head, "Content-Range": `bytes ${start}-${end}/${m.size}`, "Content-Length": end - start + 1 });
     if (req.method === "HEAD") return res.end();
-    return fs.createReadStream(m.file, { start, end }).pipe(res);
+    return stream(m.file, res, { start, end });
   }
   res.writeHead(200, { ...head, "Content-Length": m.size });
   if (req.method === "HEAD") return res.end();
-  fs.createReadStream(m.file).pipe(res);
+  stream(m.file, res);
+}
+
+/**
+ * Pipe a file, surviving a read error: the file can vanish or be replaced between the check
+ * and the read (the skill's cleanup, a re-render). An unhandled stream error would stop the
+ * whole server.
+ */
+function stream(file, res, range) {
+  const rs = fs.createReadStream(file, range);
+  rs.on("error", () => res.destroy());
+  res.on("close", () => rs.destroy());
+  rs.pipe(res);
 }
 
 function listenOnFirstFree(server, ports) {

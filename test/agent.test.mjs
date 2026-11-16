@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ADAPTERS, lineParser } from "../src/agent/adapters.mjs";
+import { CLAUDE, lineParser } from "../src/agent/adapters.mjs";
 import { createRelay, systemPrompt } from "../src/agent/relay.mjs";
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "relay");
@@ -15,7 +15,7 @@ const events = (name, adapter) => {
 };
 
 test("Claude Code: session from init, streamed text, cost from the result", () => {
-  const ev = events("claude.jsonl", ADAPTERS.claude);
+  const ev = events("claude.jsonl", CLAUDE);
   assert.equal(ev.filter((e) => e.kind === "session").length, 1);
   assert.equal(ev.filter((e) => e.kind === "delta").map((e) => e.text).join(""), "ok");
   const done = ev.find((e) => e.kind === "done");
@@ -24,32 +24,14 @@ test("Claude Code: session from init, streamed text, cost from the result", () =
   assert.equal(done.error, null);
 });
 
-test("Codex: thread id, the message, the end of the turn", () => {
-  const ev = events("codex.jsonl", ADAPTERS.codex);
-  assert.equal(ev[0].kind, "session");
-  assert.equal(ev.find((e) => e.kind === "text").text, "ok");
-  assert.ok(ev.some((e) => e.kind === "done"));
-});
-
-test("Cursor: session, text, result", () => {
-  const ev = events("cursor.jsonl", ADAPTERS.cursor);
-  assert.equal(ev[0].kind, "session");
-  assert.equal(ev.find((e) => e.kind === "done").text, "ok");
-});
-
-test("args: Claude resumes by id and gets the allowed tools; Codex and Cursor put the context in the first message only", () => {
-  const c1 = ADAPTERS.claude.args({ prompt: "hi", sessionId: "s1", resume: false, system: "ctx", allowedTools: ["Read", "Bash(node:*)"] });
+test("args: a new session gets our id, a later message resumes it, and the allowed tools go along", () => {
+  const c1 = CLAUDE.args({ prompt: "hi", sessionId: "s1", resume: false, system: "ctx", allowedTools: ["Read", "Bash(node:*)"] });
   assert.deepEqual(c1.slice(c1.indexOf("--session-id"), c1.indexOf("--session-id") + 2), ["--session-id", "s1"]);
   assert.ok(c1.includes("--append-system-prompt") && c1.includes("Bash(node:*)"));
-  const c2 = ADAPTERS.claude.args({ prompt: "hi", sessionId: "s1", resume: true });
-  assert.ok(c2.includes("--resume"));
-  const x1 = ADAPTERS.codex.args({ prompt: "hi", resume: false, system: "ctx" });
-  assert.equal(x1.at(-1), "ctx\n\nhi");
-  const x2 = ADAPTERS.codex.args({ prompt: "hi", sessionId: "t1", resume: true, system: "ctx" });
-  assert.deepEqual(x2.slice(0, 3), ["exec", "resume", "t1"]);
-  assert.equal(x2.at(-1), "hi");
-  const u = ADAPTERS.cursor.args({ prompt: "hi", resume: false, force: false });
-  assert.ok(u.includes("--trust") && !u.includes("--force"));
+  assert.equal(c1[1], "hi");
+  const c2 = CLAUDE.args({ prompt: "hi", sessionId: "s1", resume: true });
+  assert.deepEqual(c2.slice(c2.indexOf("--resume"), c2.indexOf("--resume") + 2), ["--resume", "s1"]);
+  assert.ok(!c2.includes("--session-id"));
 });
 
 test("a junk line in the stream is skipped, not fatal", () => {
@@ -69,7 +51,7 @@ test("the relay runs a turn end to end, keeps the session, and resumes it", { sk
   const oldPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${oldPath}`;
   const seen = [];
-  const relay = createRelay({ home, localDir: path.join(home, "local"), bus: { emit: (m) => seen.push(m) }, settings: () => ({ agent: "claude", allowedTools: ["Read"] }) });
+  const relay = createRelay({ home, localDir: path.join(home, "local"), bus: { emit: (m) => seen.push(m) }, settings: () => ({ allowedTools: ["Read"] }) });
   try {
     const turn = () => new Promise((resolve) => {
       const r = relay.send("run-x", "hello", { runDir: "/home/a/run", title: "T", label: "T" });

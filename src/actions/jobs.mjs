@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { statSafe, writeJson } from "../home.mjs";
+import { statSafe, readJson, writeJson, localDir } from "../home.mjs";
 import { rawKit, brandsDir } from "../store/brands.mjs";
 
 /** Where boqo-clips' code is installed (INSTALL.md clones it to ~/.boqo-clips). */
@@ -72,17 +72,22 @@ export function createJobs({ home, bus, log = () => {}, tools = clipsTools, runn
     }
     const args = [job.tools.render, "--run", job.runDir, "--n", job.ns.join(",")];
     if (brand) args.push("--brand", brand);
+    const before = rowsOf(job.runDir, job.ns); // to tell a re-render from a first render afterwards
     log(`render ${job.runId} n=${job.ns.join(",")}${job.style ? ` style=${job.style}` : ""}`);
-    runner(args, { cwd: job.tools.root, env }, (code, tail) => {
-      finish(job, code === 0 ? null : explain(tail) || `The render stopped (exit ${code}).`, scratch);
+    runner(args, { cwd: job.tools.root, env }, (code, stdout, stderr) => {
+      const { error, errors } = outcome(job.ns, code, stdout, stderr);
+      const ok = job.ns.filter((n) => !errors[n] && !error);
+      recordRerenders(home, job.runId, ok.filter((n) => before.get(n)?.rendered), before);
+      finish(job, error, scratch, errors);
     });
   }
 
-  function finish(job, error, scratch) {
-    job.state = error ? "failed" : "done";
-    job.error = error;
+  function finish(job, error, scratch, errors = {}) {
+    const failedAny = !!error || Object.keys(errors).length > 0;
+    job.state = failedAny ? "failed" : "done";
+    job.error = error ?? Object.values(errors)[0] ?? null;
     if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
-    bus.emit({ type: "job", job: { id: job.id, runId: job.runId, ns: job.ns, state: job.state, error } });
+    bus.emit({ type: "job", job: { id: job.id, runId: job.runId, ns: job.ns, state: job.state, error, errors } });
     bus.emit({ type: "changed" });
     current = null;
     bus.emit({ type: "jobs", jobs: list() });
@@ -92,21 +97,74 @@ export function createJobs({ home, bus, log = () => {}, tools = clipsTools, runn
   return { add, list, busy: () => !!current };
 }
 
-/** The engine's own errors are written for the agent; keep the last plain line. */
-function explain(tail) {
-  const lines = String(tail).split("\n").map((l) => l.trim()).filter(Boolean);
-  const line = lines.reverse().find((l) => !/^\s*at\s/.test(l) && !/^node:/.test(l));
-  if (!line) return "";
-  if (/sections?\.json|no source|source/i.test(line)) return "The source video isn’t on this computer any more. Ask your agent to render it; it can download the part again.";
-  if (/journal/i.test(line)) return "The run is being reordered. Try again in a moment.";
-  return line.slice(0, 200);
+/**
+ * What the engine said. tools/render.mjs reports on stdout (read at boqo-clips p0b):
+ * a refusal is {"error": "..."} with exit 1, and a run is {"rendered": [...], "failed": [{n, error}]},
+ * exit 0 even when some clips failed. stderr is only a fallback for crashes.
+ */
+export function outcome(ns, code, stdout, stderr) {
+  const report = lastJson(stdout);
+  if (report?.error) return { error: explain(report.error), errors: {} };
+  const errors = {};
+  for (const f of report?.failed ?? []) if (ns.includes(Number(f.n))) errors[Number(f.n)] = explain(f.error);
+  if (report) return { error: null, errors };
+  if (code === 0) return { error: null, errors };
+  return { error: explain(lastLine(stderr)) || `The render stopped (exit ${code}).`, errors: {} };
+}
+
+/** The engine's errors are written for the agent; the ones a person can act on get plain words. */
+export function explain(msg) {
+  const m = String(msg ?? "").trim();
+  if (!m) return "";
+  if (/no sections\.json|no section in sections\.json holds clip|fetch its section|re-fetch sections/i.test(m)) {
+    return "The part of the video this clip needs isn’t on this computer any more. Ask your agent to render it; it can download that part again.";
+  }
+  if (/an interrupted order is pending/i.test(m)) return "The run’s clips are being reordered. Try again once your agent finishes.";
+  return m.split("\n")[0].slice(0, 200);
+}
+
+function lastJson(text) {
+  const t = String(text ?? "").trim();
+  if (!t) return null;
+  try { return JSON.parse(t); } catch { /* not one object */ }
+  for (const line of t.split("\n").reverse()) {
+    const l = line.trim();
+    if (!l.startsWith("{")) continue;
+    try { return JSON.parse(l); } catch { /* keep looking */ }
+  }
+  return null;
+}
+const lastLine = (t) => String(t ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !/^at\s/.test(l) && !/^node:/.test(l)).at(-1) ?? "";
+
+/** clips.json rows for these clips, before the render: whether each was rendered, and its judgment. */
+function rowsOf(runDir, ns) {
+  const rec = readJson(path.join(runDir, "clips.json"));
+  const out = new Map();
+  for (const r of rec?.clips ?? []) if (ns.includes(r.n)) out.set(r.n, { rendered: !!r.rendered, judgment: r.judgment ?? null });
+  return out;
+}
+
+/**
+ * The engine keeps a clip's stranger judgment when it re-renders it. Note each local re-render
+ * with the judgment it had, so the page can say the judgment is from before, until the agent
+ * judges the clip again (the judgment then differs from the one recorded here).
+ */
+export function recordRerenders(home, runId, ns, before) {
+  if (!ns.length) return;
+  const file = path.join(localDir(home), "rerenders.json");
+  const all = readJson(file) ?? {};
+  const run = (all[runId] ??= {});
+  for (const n of ns) run[n] = { at: new Date().toISOString(), judgment: JSON.stringify(before.get(n)?.judgment ?? null) };
+  writeJson(file, all);
 }
 
 function spawnNode(args, opts, done) {
-  const child = spawn(process.execPath, args, { ...opts, stdio: ["ignore", "ignore", "pipe"] });
-  let tail = "";
+  const child = spawn(process.execPath, args, { ...opts, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let out = "", err = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (d) => { out = (out + d).slice(-200_000); });
   child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (d) => { tail = (tail + d).slice(-4000); });
-  child.on("close", (code) => done(code, tail));
-  child.on("error", (err) => done(-1, err.message));
+  child.stderr.on("data", (d) => { err = (err + d).slice(-4000); });
+  child.on("close", (code) => done(code, out, err));
+  child.on("error", (e) => done(-1, "", e.message));
 }

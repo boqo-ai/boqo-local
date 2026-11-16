@@ -4,10 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { makeHome } from "./helpers/home.mjs";
-import { createJobs } from "../src/actions/jobs.mjs";
-import { resolveJob } from "../src/store/index.mjs";
+import { createJobs, outcome, explain } from "../src/actions/jobs.mjs";
+import { resolveJob, run as readRunPage } from "../src/store/index.mjs";
 
-function setup() {
+/** A stand-in engine: answers on stdout the way tools/render.mjs does. */
+function setup(reply = () => ({ code: 0, stdout: JSON.stringify({ rendered: [], failed: [] }) })) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "boqo-jobs-"));
   const ids = makeHome(home);
   const calls = [];
@@ -17,15 +18,16 @@ function setup() {
     bus: { emit: (m) => emitted.push(m) },
     tools: () => ({ root: "/opt/boqo-clips", render: "/opt/boqo-clips/tools/render.mjs" }),
     runner: (args, opts, done) => {
-      // what the engine would see, including the kit in the scratch home for a style change
       const kitDir = opts.env.BOQO_HOME !== home ? path.join(opts.env.BOQO_HOME, "brands", args.at(-1)) : null;
       calls.push({ args, home: opts.env.BOQO_HOME, kit: kitDir ? JSON.parse(fs.readFileSync(path.join(kitDir, "brand.json"), "utf8")) : null, logo: kitDir ? fs.existsSync(path.join(kitDir, "logo.png")) : null });
-      setImmediate(() => done(0, ""));
+      const r = reply(args);
+      setImmediate(() => done(r.code, r.stdout ?? "", r.stderr ?? ""));
     },
   });
   return { home, ids, jobs, calls, emitted };
 }
 const settle = () => new Promise((r) => setTimeout(r, 30));
+const lastJob = (emitted) => emitted.filter((m) => m.type === "job").at(-1).job;
 
 test("render: the engine gets the run, the clips and the kit", async () => {
   const { home, ids, jobs, calls } = setup();
@@ -45,7 +47,6 @@ test("another caption style goes through a one-off kit in a scratch home, keepin
   assert.deepEqual(calls[0].kit.captions.accentColours, ["#FF8A3D"]);
   assert.equal(calls[0].logo, true);
   assert.equal(fs.existsSync(calls[0].home), false);
-  // the person's own kit is untouched
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, "brands", "longtable", "brand.json"), "utf8")).captions.style, "punch");
 });
 
@@ -57,6 +58,59 @@ test("one job at a time, and the same request twice is one job", async () => {
   assert.equal(a.id, b.id);
   await settle();
   assert.equal(calls.length, 2);
+});
+
+test("a clip the engine lists as failed is reported as failed, even with exit 0 (#7)", async () => {
+  const { home, ids, jobs, emitted } = setup(() => ({ code: 0, stdout: JSON.stringify({ rendered: [{ n: 11 }], failed: [{ n: 12, error: "no section in sections.json holds clip 12 (520-560 s): fetch its section" }] }) }));
+  jobs.add(resolveJob(home, { run: ids.doneName, n: [11, 12] }));
+  await settle();
+  const job = lastJob(emitted);
+  assert.equal(job.state, "failed");
+  assert.equal(job.errors[11], undefined);
+  assert.match(job.errors[12], /isn’t on this computer any more/);
+});
+
+test("an engine refusal on stdout becomes the job's error in plain words (#7)", async () => {
+  const { home, ids, jobs, emitted } = setup(() => ({ code: 1, stdout: JSON.stringify({ error: "an interrupted order is pending: run clips.mjs order first, then render" }) }));
+  jobs.add(resolveJob(home, { run: ids.doneName, n: [11] }));
+  await settle();
+  assert.match(lastJob(emitted).error, /being reordered/);
+});
+
+test("other engine errors are shown as they are, not blamed on a missing source (#4)", () => {
+  assert.equal(explain("ffmpeg exited 1: Invalid data found when processing input"), "ffmpeg exited 1: Invalid data found when processing input");
+  assert.equal(explain("the caption source track is empty"), "the caption source track is empty");
+  assert.match(explain("the run has no sections.json and no --src was given: there is no video to read frames from"), /isn’t on this computer/);
+  assert.match(explain("sec-03.mp4 holds 12.0 s, too short for clip 4 at 0 s: fetch its section again"), /isn’t on this computer/);
+  assert.deepEqual(outcome([1], 0, "", ""), { error: null, errors: {} });
+  assert.match(outcome([1], 2, "", "Error: boom\n    at x (y.js:1)").error, /boom/);
+});
+
+test("a local re-render marks the old stranger judgment as from before, until the agent judges again (#3)", async () => {
+  const { home, ids, jobs } = setup();
+  jobs.add(resolveJob(home, { run: ids.doneName, n: [2, 11] })); // 2 was rendered and judged; 11 wasn't rendered
+  await settle();
+  let page = readRunPage(home, ids.doneName);
+  assert.equal(page.clips.find((c) => c.n === 2).judgmentStale, true);
+  assert.equal(page.clips.find((c) => c.n === 11).judgmentStale, false);
+  assert.equal(page.clips.find((c) => c.n === 1).judgmentStale, false);
+  // the agent judges clip 2 again
+  const f = path.join(home, "boqo-clips", "runs", ids.doneName, "clips.json");
+  const rec = JSON.parse(fs.readFileSync(f, "utf8"));
+  rec.clips[1].judgment = { overall: 5, why: "Tighter now.", annotation: {} };
+  fs.writeFileSync(f, JSON.stringify(rec));
+  page = readRunPage(home, ids.doneName);
+  assert.equal(page.clips.find((c) => c.n === 2).judgmentStale, false);
+});
+
+test("media URLs carry the file's modification time, so a re-render isn't served from cache (#3)", () => {
+  const { home, ids } = setup();
+  const before = readRunPage(home, ids.doneName).clips[0];
+  assert.ok(before.videoV > 0 && before.thumbV > 0);
+  const file = path.join(home, before.video);
+  const later = new Date(Date.now() + 60_000);
+  fs.utimesSync(file, later, later);
+  assert.notEqual(readRunPage(home, ids.doneName).clips[0].videoV, before.videoV);
 });
 
 test("without the skill installed, the page is told to ask the agent", () => {

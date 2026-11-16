@@ -1,12 +1,11 @@
-// The chat panel's bridge to the person's own agent. Each message starts the agent CLI in
-// print mode, resuming the thread's session, and streams its events to the page.
-// One turn runs at a time across the whole app: two agents editing one run folder at once
-// would race on clips.json.
+// The chat panel's bridge to Claude Code. Each message starts `claude -p`, resuming the
+// thread's session, and streams its events to the page. One turn runs at a time across the
+// whole app: two turns editing one run folder at once would race on clips.json.
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { ADAPTERS, lineParser } from "./adapters.mjs";
+import { CLAUDE, lineParser } from "./adapters.mjs";
 import { ensureDir, readJson, writeJson } from "../home.mjs";
 
 const isWin = process.platform === "win32";
@@ -20,20 +19,17 @@ export function resolveBin(bin) {
 }
 
 /**
- * The agent is started without a shell, so nothing in the message or the context (a video
- * title, say) can become a command. On Windows that rules out .cmd/.bat shims, which only
- * a shell can run; the page then asks for the agent's native install.
+ * Claude Code is started without a shell, so nothing in the message or the context (a video
+ * title, say) can become a command. On Windows that rules out an npm .cmd shim, which only
+ * a shell can run; the page then asks for the native install.
  */
 export const shimOnly = (exe) => isWin && /\.(cmd|bat|ps1)$/i.test(exe);
 
-/** Which agent CLIs are on PATH. */
-export function detectAgents() {
-  const found = [];
-  for (const a of Object.values(ADAPTERS)) {
-    const p = resolveBin(a.bin);
-    if (p) found.push({ id: a.id, label: a.label, path: p, usable: !shimOnly(p) });
-  }
-  return found;
+/** Is Claude Code here, and can the chat start it? */
+export function detectAgent() {
+  const p = resolveBin(CLAUDE.bin);
+  if (!p) return { label: CLAUDE.label, installed: false, usable: false };
+  return { label: CLAUDE.label, installed: true, usable: !shimOnly(p) };
 }
 
 export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
@@ -46,7 +42,7 @@ export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
 
   function readThread(id) {
     if (!safeId(id)) return null;
-    const meta = readJson(metaFile(id)) ?? { id, sessionId: null, agent: null, startedAt: null };
+    const meta = readJson(metaFile(id)) ?? { id, sessionId: null, startedAt: null };
     let messages = [];
     try {
       messages = fs.readFileSync(logFile(id), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -59,57 +55,42 @@ export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
   }
 
   /**
-   * Send one message. `context` is the page's selection (run folder, clip, file) and becomes
-   * the agent's standing instructions for this thread.
+   * Send one message. `context` is the page's selection (run folder, clip) and becomes the
+   * standing instructions for the turn.
    */
   function send(threadId, text, context) {
     if (!safeId(threadId)) return { error: "bad thread" };
     if (running) return { error: "busy", threadId: running.threadId };
-    const s = settings();
-    const adapter = ADAPTERS[s.agent];
-    if (!adapter) return { error: "no agent" };
-    const exe = resolveBin(adapter.bin);
-    if (!exe) return { error: `${adapter.label} isn't installed on this computer.` };
-    if (shimOnly(exe)) return { error: `${adapter.label} is installed through npm here, which the dashboard can't start safely on Windows. Install it with its own installer.` };
+    const exe = resolveBin(CLAUDE.bin);
+    if (!exe) return { error: "Claude Code isn't installed on this computer." };
+    if (shimOnly(exe)) return { error: "Claude Code is installed through npm here, which the dashboard can't start safely on Windows. Install it with its own installer." };
 
-    const meta = readJson(metaFile(threadId)) ?? { id: threadId, sessionId: null, agent: adapter.id, startedAt: new Date().toISOString() };
-    if (meta.agent && meta.agent !== adapter.id) { meta.sessionId = null; } // switching agents starts a fresh session
-    meta.agent = adapter.id;
+    const meta = readJson(metaFile(threadId)) ?? { id: threadId, sessionId: null, startedAt: new Date().toISOString() };
     const resume = !!meta.sessionId;
-    if (!resume && adapter.choosesSessionId) meta.sessionId = crypto.randomUUID();
+    if (!resume) meta.sessionId = crypto.randomUUID();
     writeJson(metaFile(threadId), meta);
 
     const at = new Date().toISOString();
     append(threadId, { role: "you", text, at, context: context?.label ?? null });
     bus.emit({ type: "chat", threadId, event: { kind: "user", text, at } });
 
-    const args = adapter.args({
-      prompt: text,
-      sessionId: meta.sessionId,
-      resume,
-      system: systemPrompt(home, context),
-      allowedTools: s.allowedTools,
-      sandbox: s.codexSandbox,
-      force: s.cursorForce,
-      cwdExtra: [],
-    });
-    log(`agent ${adapter.id} ${resume ? "resume" : "start"} thread=${threadId}`);
+    const args = CLAUDE.args({ prompt: text, sessionId: meta.sessionId, resume, system: systemPrompt(home, context), allowedTools: settings().allowedTools });
+    log(`claude ${resume ? "resume" : "start"} thread=${threadId}`);
     const child = spawn(exe, args, { cwd: home, env: process.env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true });
     running = { threadId, child };
-    bus.emit({ type: "chat", threadId, event: { kind: "busy", agent: adapter.label } });
+    bus.emit({ type: "chat", threadId, event: { kind: "busy", agent: CLAUDE.label } });
 
     let streamed = "", tools = [], final = null;
     const onEvent = (ev) => {
       // A resumed session can come back under a new id; always keep the latest one.
       if (ev.kind === "session" && ev.id !== meta.sessionId) { meta.sessionId = ev.id; writeJson(metaFile(threadId), meta); }
       if (ev.kind === "delta") streamed += ev.text;
-      if (ev.kind === "text") streamed += (streamed ? "\n\n" : "") + ev.text;
       if (ev.kind === "tool") tools.push({ name: ev.name, detail: ev.detail });
       if (ev.kind === "done") final = ev;
       if (ev.kind !== "session") bus.emit({ type: "chat", threadId, event: ev });
     };
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", lineParser((o) => adapter.parse(o).forEach(onEvent)));
+    child.stdout.on("data", lineParser((o) => CLAUDE.parse(o).forEach(onEvent)));
     let errTail = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (d) => { errTail = (errTail + d).slice(-2000); });
@@ -118,8 +99,8 @@ export function createRelay({ home, localDir, bus, settings, log = () => {} }) {
       if (running?.child !== child) return;
       running = null;
       const textOut = (final?.text || streamed).trim();
-      const error = final?.error ?? (code !== 0 && !textOut ? lastMeaningfulLine(errTail) || `${adapter.label} stopped (exit ${code})` : null);
-      append(threadId, { role: "agent", agent: adapter.label, text: textOut, tools, costUsd: final?.costUsd ?? null, error, at: new Date().toISOString() });
+      const error = final?.error ?? (code !== 0 && !textOut ? lastMeaningfulLine(errTail) || `Claude Code stopped (exit ${code})` : null);
+      append(threadId, { role: "agent", agent: CLAUDE.label, text: textOut, tools, costUsd: final?.costUsd ?? null, error, at: new Date().toISOString() });
       bus.emit({ type: "chat", threadId, event: { kind: "end", text: textOut, tools, costUsd: final?.costUsd ?? null, error } });
       bus.emit({ type: "changed" }); // the agent may have rendered or posted something
     };
@@ -142,7 +123,7 @@ function lastMeaningfulLine(s) {
   return lines.at(-1)?.slice(0, 200) ?? "";
 }
 
-/** The standing instructions for a dashboard thread. Short: the page shows the clips itself. */
+/** The standing instructions for a dashboard turn. Short: the page shows the clips itself. */
 export function systemPrompt(home, ctx) {
   const lines = [
     "The person is talking to you from the boqo dashboard on their computer, not the terminal.",

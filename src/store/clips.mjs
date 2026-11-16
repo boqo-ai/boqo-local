@@ -3,7 +3,7 @@
 // (contract: boqo-clips p0b, SKILL.md steps 2-7 and engine/clips-record.mjs).
 import fs from "node:fs";
 import path from "node:path";
-import { readJson, statSafe, listDirs } from "../home.mjs";
+import { readJson, statSafe, listDirs, localDir } from "../home.mjs";
 import { mediaRel } from "../security.mjs";
 
 export const RENDER_FIRST = 10;
@@ -51,6 +51,9 @@ function sourceTitle(dir, record, name) {
 export function clipRow(home, dir, r, i) {
   const abs = (p) => (p ? (path.isAbsolute(p) ? p : path.join(dir, p)) : null);
   const file = abs(r.file), thumb = abs(r.thumb);
+  // A re-render writes the same file names; the modification time versions the URL so the
+  // browser doesn't keep showing the old render from its cache.
+  const fileSt = file ? statSafe(file) : null, thumbSt = thumb ? statSafe(thumb) : null;
   const axes = r.axes ?? {};
   return {
     n: r.n ?? i + 1,
@@ -67,8 +70,11 @@ export function clipRow(home, dir, r, i) {
     why: r.judgment?.why ?? null,
     standalone: r.standalone?.outcome ?? null,
     rendered: !!r.rendered && !!file,
-    video: file && statSafe(file) ? mediaRel(home, file) : null,
-    thumb: thumb && statSafe(thumb) ? mediaRel(home, thumb) : null,
+    video: fileSt ? mediaRel(home, file) : null,
+    videoV: fileSt ? Math.round(fileSt.mtimeMs) : null,
+    thumb: thumbSt ? mediaRel(home, thumb) : null,
+    thumbV: thumbSt ? Math.round(thumbSt.mtimeMs) : null,
+    judgmentRaw: r.judgment ?? null,
     file,
     notes: Array.isArray(r.notes) ? r.notes.slice(0, 4) : [],
   };
@@ -137,7 +143,7 @@ export function readRun(home, name, log = runsLog(home)) {
     target,
     judged,
     posted: logLine?.posted ?? 0,
-    top: rows.filter((r) => r.rendered).slice(0, 5).map(({ n, title, score, band, thumb }) => ({ n, title, score, band, thumb })),
+    top: rows.filter((r) => r.rendered).slice(0, 5).map(({ n, title, score, band, thumb, thumbV }) => ({ n, title, score, band, thumb, thumbV })),
     dir,
   };
 }
@@ -147,10 +153,15 @@ export function readRunFull(home, name) {
   const summary = readRun(home, name);
   if (!summary) return null;
   const record = readJson(path.join(summary.dir, "clips.json"));
+  const rerenders = (readJson(path.join(localDir(home), "rerenders.json")) ?? {})[name] ?? {};
   const clips = (record?.clips ?? []).map((r, i) => {
     const row = clipRow(home, summary.dir, r, i);
     row.grades = row.axes.map((v) => (v == null ? null : grade(v)));
+    // Still the judgment it had when this page re-rendered it: it's about the old render.
+    const rr = rerenders[row.n];
+    row.judgmentStale = !!rr && row.judgment != null && JSON.stringify(row.judgmentRaw) === rr.judgment;
     delete row.file;
+    delete row.judgmentRaw;
     return row;
   });
   const { dir, ...rest } = summary;

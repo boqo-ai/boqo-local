@@ -80,7 +80,7 @@ test("a live watch, and one whose watcher stopped answering", () => {
   assert.equal(w.channel, "nova_plays");
   assert.equal(w.clipped, 2);
   assert.equal(w.moments[0].title, "Three missed jumps in a row"); // newest first
-  assert.equal(w.moments.find((m) => m.id === "m2").state, "listed");
+  assert.equal(w.moments.find((m) => m.id === "m2").state, "below"); // 54, under the default auto-clip bar of 80
   const st = JSON.parse(fs.readFileSync(path.join(sess, "status.json"), "utf8"));
   st.updatedAt = new Date(Date.now() - 10 * 60000).toISOString();
   fs.writeFileSync(path.join(sess, "status.json"), JSON.stringify(st));
@@ -139,4 +139,67 @@ test("replayed: 'top N%' computed the way the engine shows it, never top 0%", ()
   assert.equal(clips[0].replayTop, 71);
   assert.equal(clips[1].replayTop, 1);
   assert.equal(clips[2].replayTop, null);
+});
+
+// boqo-sniper v0.2.2 (lib/settings.mjs isAutoMoment, lib/buffer.mjs LISTED_KEEP_SEC, tools/next.mjs).
+test("moment states: clipped, picking, waiting for the agent, below the bar (told and untold), and drops", () => {
+  const home = tmp();
+  const { watchId, sess } = makeHome(home);
+  const meta = (id, score, signal = "chat") => {
+    fs.mkdirSync(path.join(sess, "moments", id), { recursive: true });
+    fs.writeFileSync(path.join(sess, "moments", id, "meta.json"), JSON.stringify({ peakAt: 0, score, signal, signalLine: "x", peakIso: new Date().toISOString() }));
+  };
+  meta("q1", 85); // at the bar, not yet taken: the agent gets it on its own
+  meta("p1", 85); fs.writeFileSync(path.join(sess, "moments", "p1", ".taken"), "");
+  meta("h1", 40, "manual"); // hand-made: always the agent's
+  meta("b1", 60); // below the bar, not told yet
+  meta("b2", 61); const told = path.join(sess, "moments", "b2", ".listed"); fs.writeFileSync(told, "");
+  const toldAt = new Date(Date.now() - 5 * 60000); fs.utimesSync(told, toldAt, toldAt);
+  const st = JSON.parse(fs.readFileSync(path.join(sess, "status.json"), "utf8"));
+  fs.writeFileSync(path.join(sess, "status.json"), JSON.stringify({ ...st, dropped: 2 }));
+
+  let w = store.watch(home, watchId);
+  const by = (id) => w.moments.find((m) => m.id === id);
+  assert.equal(by("q1").state, "queued");
+  assert.equal(by("p1").state, "picking");
+  assert.equal(by("h1").state, "queued");
+  assert.equal(by("b1").state, "below");
+  assert.equal(by("b1").keepUntil, null);
+  assert.equal(by("b2").state, "below");
+  assert.equal(Date.parse(by("b2").keepUntil) - Date.parse(by("b2").toldAt), 15 * 60000);
+  assert.ok(Math.abs(Date.parse(by("b2").toldAt) - toldAt.getTime()) < 2000);
+  assert.equal(by("m1").state, "clipped");
+  assert.equal(w.dropped, 2);
+  assert.equal(w.below, 3); // m2 (54), b1, b2
+
+  // the session's own settings.json decides the bar: auto-clip off sends nothing to the agent on its own
+  fs.writeFileSync(path.join(sess, "settings.json"), JSON.stringify({ autoClip: false, autoClipMinScore: 80 }));
+  w = store.watch(home, watchId);
+  assert.equal(by("q1").state, "below");
+  assert.equal(by("h1").state, "queued"); // a hand-made moment still goes
+  fs.writeFileSync(path.join(sess, "settings.json"), JSON.stringify({ autoClip: true, autoClipMinScore: 55 }));
+  w = store.watch(home, watchId);
+  assert.equal(by("b1").state, "queued");
+  assert.equal(by("m2").state, "below"); // 54 < 55
+});
+
+// boqo-clips v0.2.2: render.json's run notes, and asr.json's "words": 0.
+test("a run's own notes are read from render.json, and no speech stops the run without a stall", () => {
+  const home = tmp();
+  makeHome(home);
+  const runs = path.join(home, "boqo-clips", "runs");
+  const name = fs.readdirSync(runs).find((n) => fs.existsSync(path.join(runs, n, "words.json")) && !fs.existsSync(path.join(runs, n, "clips.json")));
+  assert.ok(name, "the fixture has a run in progress");
+  const dir = path.join(runs, name);
+  fs.writeFileSync(path.join(dir, "render.json"), JSON.stringify({ rendered: [], failed: [], notes: ["No logo in the brand kit, so none was drawn."] }));
+  let r = readRun(home, name);
+  assert.deepEqual(r.notes, ["No logo in the brand kit, so none was drawn."]);
+  assert.equal(r.noSpeech, false);
+  fs.writeFileSync(path.join(dir, "asr.json"), JSON.stringify({ words: 0 }));
+  const old = new Date(Date.now() - 3 * 3600000);
+  for (const f of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, f), old, old);
+  fs.utimesSync(dir, old, old);
+  r = readRun(home, name);
+  assert.equal(r.noSpeech, true);
+  assert.equal(r.stalled, false); // a run that stopped on purpose is not "stopped at a step"
 });

@@ -192,3 +192,5 @@ a.it:hover,button.it:hover{background:var(--fill-4)}
 }
 @media (max-width: 560px){ .it{grid-template-columns:1fr;gap:4px} .strip{grid-template-columns:repeat(4,minmax(0,1fr))} .strip>.sc:nth-child(5){display:none} }
 @media (prefers-reduced-motion: reduce){ *{animation:none!important;transition:none!important} }
+.mn0{min-width:0}
+.h1-live{display:flex;align-items:center;gap:10px}

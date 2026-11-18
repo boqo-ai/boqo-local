@@ -99,10 +99,21 @@ async function load(navigated) {
   if (navigated) { $("#main").scrollTop = 0; scrollChat(true); }
 }
 
+/**
+ * Progress bars carry their value in data-v; the width is set here through the CSSOM. Measured in Chromium against
+ * this page's CSP (style-src 'self', src/security.mjs), 2026-11-18: a `style="--v:40%"` cloned in by morph() on the
+ * first render applies, but morph()'s later `setAttribute("style", "--v:70%")` is refused (--v stays 40%), so a bar
+ * froze at the value it first drew while its text kept counting. `el.style.setProperty` is allowed (--v became 90%).
+ */
+function setBars(root) {
+  for (const el of root.querySelectorAll("[data-v]")) el.style.setProperty("--v", `${Number(el.dataset.v) || 0}%`);
+}
+
 function render() {
   const r = route();
   const html = r.view === "run" ? viewRun(S.run) : r.view === "watch" ? viewWatch(S.watch) : viewFeed(S.feed);
   morph($("#main"), html);
+  setBars($("#main"));
   renderChat();
   document.title = r.view === "run" && S.run?.title ? `${S.run.title} · boqo` : r.view === "watch" && S.watch?.channel ? `${S.watch.channel} · boqo` : "boqo";
 }
@@ -112,7 +123,7 @@ function steps(list) {
   return `<div class="sl">${list.map((s) => {
     const icon = s.state === "done" ? ic("check") : s.state === "now" ? '<span class="spin"></span>' : '<span class="o"></span>';
     const right = s.state === "now" ? esc(s.detail) : "";
-    const bar = s.state === "now" && s.progress != null && s.progress > 0 ? `<div class="sl-bar"><i style="--v:${Math.round(s.progress * 100)}%"></i></div>` : "";
+    const bar = s.state === "now" && s.progress != null && s.progress > 0 ? `<div class="sl-bar"><i data-v="${Math.round(s.progress * 100)}"></i></div>` : "";
     return `<div class="sl-r ${s.state} ${s.who}" data-key="${s.key}"><span class="sl-i">${icon}</span><span class="n">${esc(s.label)}</span><span class="v">${right}</span></div>${bar}`;
   }).join("")}</div>`;
 }
@@ -150,6 +161,8 @@ function runMeta(r) {
   if (r.done) bits.push(`${r.total} clips, the best ${r.rendered} rendered`);
   if (r.posted) bits.push(`${r.posted} posted`);
   if (r.failed?.length) bits.push(`<span class="err">${r.failed.length} didn’t render</span>`);
+  if (r.noSpeech) bits.push("No speech heard in this video, so there was nothing to clip");
+  for (const n of r.notes ?? []) bits.push(esc(n));
   if (r.stalled) bits.push(`Stopped at “${esc(r.steps.find((s) => s.state === "now")?.label ?? "")}”`);
   return bits.join(" · ");
 }
@@ -158,16 +171,24 @@ function feedRun(r) {
   return `<a class="it" href="/r/${encodeURIComponent(r.id)}" data-nav data-key="run-${esc(r.id)}"><time>${clock(r.startedAt)}</time><div class="it-b">
     <h2><span class="t">${esc(r.title)}</span><span class="go">${ic("chev")}</span></h2>
     <p class="meta">${runMeta(r)}</p>
-    ${r.done && r.top.length ? strip(r.top) : r.stalled ? "" : steps(r.steps)}
+    ${r.done && r.top.length ? strip(r.top) : r.stalled || r.noSpeech ? "" : steps(r.steps)}
   </div></a>`;
 }
 
 function watchMeta(w) {
   const where = w.platform ? `${w.platform[0].toUpperCase()}${w.platform.slice(1)}` : "";
   const state = w.live ? "watching on this computer" : w.state === "lost" ? "the watcher stopped answering" : w.state === "failed" ? `<span class="err">stopped: ${esc(w.error ?? "failed")}</span>` : "ended";
-  return [where, state].filter(Boolean).join(" · ");
+  const dropped = w.dropped ? `${w.dropped} below the bar dropped to make room` : "";
+  return [where, state, dropped].filter(Boolean).join(" · ");
 }
-const momentRows = (ms) => `<div class="ls">${ms.map((m) => `<div class="ls-r${m.state === "picking" ? " agent" : m.state === "listed" ? " muted" : ""}" data-key="m-${esc(m.id)}"><span class="t">${clock(m.at)}</span><span class="x">${m.state === "picking" ? "Your agent is picking the clip…" : esc(m.title ?? m.signal)}<small>${esc(m.state === "clipped" ? m.signal : "")}</small></span><span class="r">${m.score ?? ""}</span></div>`).join("")}</div>`;
+/** What a moment's row says beside its title (boqo-sniper v0.2.2's moment states; store/sniper.mjs). */
+function momentNote(m) {
+  if (m.state === "clipped") return m.signal ?? "";
+  if (m.state === "queued") return "waiting for your agent";
+  if (m.state === "below") return m.keepUntil ? `below the bar · say “clip it” · kept until at least ${clock(m.keepUntil)}` : "below the bar";
+  return "";
+}
+const momentRows = (ms) => `<div class="ls">${ms.map((m) => `<div class="ls-r${m.state === "picking" ? " agent" : m.state === "below" ? " muted" : ""}" data-key="m-${esc(m.id)}"><span class="t">${clock(m.at)}</span><span class="x">${m.state === "picking" ? "Your agent is picking the clip…" : esc(m.title ?? m.signal)}<small>${esc(momentNote(m))}</small></span><span class="r">${m.score ?? ""}</span></div>`).join("")}</div>`;
 
 function feedWatch(w) {
   return `<a class="it" href="/w/${w.id.split("/").map(encodeURIComponent).join("/")}" data-nav data-key="w-${esc(w.id)}"><time>${clock(w.startedAt)}</time><div class="it-b">
@@ -200,7 +221,7 @@ function clipRow(r, c) {
   const meta = [c.band, c.replayTop != null ? `replayed top ${c.replayTop}%` : "", keeps, c.seconds ? mmss(c.seconds) : ""].filter(Boolean).join(" · ");
   return `<button type="button" class="cl${c.rendered ? "" : " pending"}" data-clip="${c.n}" aria-expanded="${open}" data-key="c-${c.n}">
       <span class="rk">${c.n}</span>${still(c.thumb, "", c.thumbV)}
-      <span style="min-width:0"><span class="t">${esc(c.title)}</span><span class="m">${esc(meta)}</span></span>
+      <span class="mn0"><span class="t">${esc(c.title)}</span><span class="m">${esc(meta)}</span></span>
       <span class="s">${job ? '<span class="spin" aria-label="Rendering"></span>' : ""}${c.score ?? ""}</span>
     </button>${open ? clipOpen(r, c, job) : ""}`;
 }
@@ -247,7 +268,7 @@ function viewWatch(w) {
   if (!w) return `<div class="page">${backLink()}</div>`;
   if (w.missing) return `<div class="page">${backLink()}<div class="empty"><b>This watch isn’t here</b></div></div>`;
   return `<div class="page">${backLink()}
-    <div class="dt"><h1 style="display:flex;align-items:center;gap:10px">${w.live ? '<span class="live-dot" aria-hidden="true"></span>' : ""}${esc(w.channel)}</h1>
+    <div class="dt"><h1 class="h1-live">${w.live ? '<span class="live-dot" aria-hidden="true"></span>' : ""}${esc(w.channel)}</h1>
       <p class="meta">${watchMeta(w)}${w.since ? ` · since ${clock(w.since)}` : ""}</p>
       <div class="nums">${w.chatPerSec != null && w.live ? `<span><b>${w.chatPerSec.toFixed(1)}</b>chat/s</span>` : ""}<span><b>${w.momentsCount}</b>moments</span><span><b>${w.clipped}</b>clipped</span></div>
       ${w.live ? spark(w.series, 600, 64) : ""}</div>

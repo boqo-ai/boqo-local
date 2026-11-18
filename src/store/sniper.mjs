@@ -10,6 +10,29 @@ import { band, clipRow } from "./clips.mjs";
 
 const DEAD_MS = 240 * 1000; // the skill's own rule: a status older than this means the watcher died
 
+/**
+ * boqo-sniper v0.2.2's rules for a moment, read from its source (lib/settings.mjs isAutoMoment and its defaults,
+ * lib/buffer.mjs LISTED_KEEP_SEC, tools/next.mjs): a hand-made moment, or one at or above autoClipMinScore while
+ * autoClip is on, goes to the agent on its own and is claimed with `.taken`; anything else is "below the bar" and
+ * waits for "clip it". Once `next` has told the agent of it, it carries `.listed`, and the watcher keeps it at least
+ * LISTED_KEEP_MS after that telling, then may drop it to make room (status.json `dropped` counts those).
+ */
+export const LISTED_KEEP_MS = 15 * 60 * 1000;
+const SETTINGS_DEFAULT = { autoClip: true, autoClipMinScore: 80 };
+
+function sessionSettings(sessionDir) {
+  const s = readJson(path.join(sessionDir, "settings.json"));
+  return {
+    autoClip: typeof s?.autoClip === "boolean" ? s.autoClip : SETTINGS_DEFAULT.autoClip,
+    autoClipMinScore: typeof s?.autoClipMinScore === "number" ? s.autoClipMinScore : SETTINGS_DEFAULT.autoClipMinScore,
+  };
+}
+
+function isAutoMoment(meta, settings) {
+  if (meta?.signal === "manual") return true;
+  return settings.autoClip && Number(meta?.score) >= settings.autoClipMinScore;
+}
+
 export function sniperDir(home) { return path.join(home, "boqo-sniper"); }
 
 /** UTC "20261116-204100" → Date. */
@@ -34,12 +57,17 @@ function clipsFor(home, folder, momentName) {
 
 function readMoments(home, folder, sessionDir) {
   const mdir = path.join(sessionDir, "moments");
+  const settings = sessionSettings(sessionDir);
   return listDirs(mdir).sort().reverse().map((name) => {
     const meta = readJson(path.join(mdir, name, "meta.json"));
     if (!meta) return null;
     const clips = clipsFor(home, folder, name);
     const taken = !!statSafe(path.join(mdir, name, ".taken"));
+    const listed = statSafe(path.join(mdir, name, ".listed"));
     const best = clips[0] ?? null;
+    // clipped: a rendered clip exists; picking: the agent took it and hasn't finished; queued: it goes to the agent
+    // on its own and waits its turn; below: below the bar, waiting for "clip it"
+    const state = best ? "clipped" : taken ? "picking" : isAutoMoment(meta, settings) ? "queued" : "below";
     return {
       id: name,
       at: meta.peakIso ?? null,
@@ -47,8 +75,9 @@ function readMoments(home, folder, sessionDir) {
       score: typeof meta.score === "number" ? Math.round(meta.score) : null,
       band: typeof meta.score === "number" ? band(meta.score) : null,
       title: best?.title ?? meta.title ?? null,
-      // clipped: a rendered clip exists; picking: the agent took it and hasn't finished; listed: waiting
-      state: best ? "clipped" : taken ? "picking" : "listed",
+      state,
+      toldAt: state === "below" && listed ? new Date(listed.mtimeMs).toISOString() : null,
+      keepUntil: state === "below" && listed ? new Date(listed.mtimeMs + LISTED_KEEP_MS).toISOString() : null,
       thumb: best?.thumb ?? null,
       thumbV: best?.thumbV ?? null,
       video: best?.video ?? null,
@@ -78,6 +107,8 @@ export function readWatch(home, id) {
     chatPerSec: typeof status.chatPerSec === "number" ? status.chatPerSec : null,
     momentsCount: status.moments ?? moments.length,
     clipped: moments.filter((m) => m.state === "clipped").length,
+    below: moments.filter((m) => m.state === "below").length,
+    dropped: typeof status.dropped === "number" ? status.dropped : 0,
     error: status.error ? String(status.error).slice(0, 200) : null,
     moments,
   };

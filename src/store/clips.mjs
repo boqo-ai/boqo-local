@@ -125,8 +125,12 @@ export function readRun(home, name, log = runsLog(home)) {
   const { steps, done, rendered, target, judged } = runSteps(dir, record, rows);
   const renderLog = readJson(path.join(dir, "render.json"));
   const failed = (renderLog?.failed ?? []).map((f) => ({ n: f.n, error: String(f.error ?? "").slice(0, 200) }));
+  // boqo-clips v0.2.2: render.json carries the run's own notes (a kit with no logo), said once; asr.json is
+  // asr.mjs's stdout, and `"words": 0` means whisper heard no speech and the skill stops (SKILL.md step 3).
+  const notes = Array.isArray(renderLog?.notes) ? renderLog.notes.map((s) => String(s).slice(0, 200)).slice(0, 3) : [];
+  const noSpeech = readJson(path.join(dir, "asr.json"))?.words === 0;
   const lastChange = latestMtime(dir);
-  const stalled = !done && Date.now() - lastChange > STALL_MS;
+  const stalled = !done && !noSpeech && Date.now() - lastChange > STALL_MS;
   const started = stampDate(name) ?? st.birthtime ?? st.mtime;
   const logLine = log.get(name);
   return {
@@ -141,6 +145,8 @@ export function readRun(home, name, log = runsLog(home)) {
     done,
     stalled,
     failed,
+    notes,
+    noSpeech,
     total: rows.length,
     rendered,
     target,

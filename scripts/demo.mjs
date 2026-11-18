@@ -65,6 +65,7 @@ setInterval(() => {
     fs.mkdirSync(path.join(ids.sess, "moments", id), { recursive: true });
     fs.writeFileSync(path.join(ids.sess, "moments", id, "meta.json"), JSON.stringify({ score: 70 + Math.round(Math.random() * 25), signalLine: "“no way” ×27 · 31 msg/s", peakIso: new Date().toISOString() }));
     fs.writeFileSync(path.join(ids.sess, "moments", id, ".taken"), "");
+    fs.writeFileSync(path.join(ids.sess, "moments", id, "video.mp4"), ""); // a claimed moment keeps its cut until it is clipped
     st.moments = moments;
   }
   fs.writeFileSync(status, JSON.stringify(st));

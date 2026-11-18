@@ -57,7 +57,7 @@ export function clipRow(home, dir, r, i) {
   const fileSt = file ? statSafe(file) : null, thumbSt = thumb ? statSafe(thumb) : null;
   const axes = r.axes ?? {};
   return {
-    n: r.n ?? i + 1,
+    n: Number.isInteger(r.n) ? r.n : i + 1,
     title: r.title ?? `Clip ${i + 1}`,
     hook: r.hook ?? "",
     start: r.window?.start ?? r.start ?? null,
@@ -128,7 +128,11 @@ export function readRun(home, name, log = runsLog(home)) {
   // boqo-clips v0.2.2: render.json carries the run's own notes (a kit with no logo), said once; asr.json is
   // asr.mjs's stdout, and `"words": 0` means whisper heard no speech and the skill stops (SKILL.md step 3).
   const notes = Array.isArray(renderLog?.notes) ? renderLog.notes.map((s) => String(s).slice(0, 200)).slice(0, 3) : [];
-  const noSpeech = readJson(path.join(dir, "asr.json"))?.words === 0;
+  // Step 14's cleanup deletes asr.json and render.json, also for a run that stopped half way; words.json stays, and
+  // asr.mjs writes it as [] when whisper heard nothing. So no speech is either signal, before any pick. The run's
+  // notes go with render.json: they show while the run is fresh, then the chat holds them.
+  const words = readJson(path.join(dir, "words.json"));
+  const noSpeech = !record && (readJson(path.join(dir, "asr.json"))?.words === 0 || (Array.isArray(words) && words.length === 0));
   const lastChange = latestMtime(dir);
   const stalled = !done && !noSpeech && Date.now() - lastChange > STALL_MS;
   const started = stampDate(name) ?? st.birthtime ?? st.mtime;

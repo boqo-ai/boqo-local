@@ -18,7 +18,9 @@ function syncChildren(a, b) {
     }
     if (x.nodeType !== 1) { if (x.nodeValue !== y.nodeValue) x.nodeValue = y.nodeValue; continue; }
     if (x.hasAttribute("data-keep")) continue;
-    for (const at of [...x.attributes]) if (!y.hasAttribute(at.name)) x.removeAttribute(at.name);
+    // `style` is never in the templates (the CSP refuses inline styles); one on the page was set at runtime through
+    // the CSSOM (the chat box's auto-grow, setBars), so a refresh keeps it.
+    for (const at of [...x.attributes]) if (!y.hasAttribute(at.name) && at.name !== "style") x.removeAttribute(at.name);
     for (const at of [...y.attributes]) if (x.getAttribute(at.name) !== at.value) x.setAttribute(at.name, at.value);
     if (x.tagName === "TEXTAREA" || x.tagName === "INPUT") continue; // never overwrite what the person is typing
     if (!x.isEqualNode(y)) syncChildren(x, y);

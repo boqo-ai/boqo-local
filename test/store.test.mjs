@@ -150,7 +150,7 @@ test("moment states: clipped, picking, waiting for the agent, below the bar (tol
     fs.writeFileSync(path.join(sess, "moments", id, "meta.json"), JSON.stringify({ peakAt: 0, score, signal, signalLine: "x", peakIso: new Date().toISOString() }));
   };
   meta("q1", 85); // at the bar, not yet taken: the agent gets it on its own
-  meta("p1", 85); fs.writeFileSync(path.join(sess, "moments", "p1", ".taken"), "");
+  meta("p1", 85); fs.writeFileSync(path.join(sess, "moments", "p1", ".taken"), ""); fs.writeFileSync(path.join(sess, "moments", "p1", "video.mp4"), "v"); // claimed, its video still there
   meta("h1", 40, "manual"); // hand-made: always the agent's
   meta("b1", 60); // below the bar, not told yet
   meta("b2", 61); const told = path.join(sess, "moments", "b2", ".listed"); fs.writeFileSync(told, "");
@@ -202,4 +202,58 @@ test("a run's own notes are read from render.json, and no speech stops the run w
   r = readRun(home, name);
   assert.equal(r.noSpeech, true);
   assert.equal(r.stalled, false); // a run that stopped on purpose is not "stopped at a step"
+});
+
+// Council review of 3465cbd (Opus 5.5 + Codex gpt-6.1-sol): finished-without-clip, dropped, ended watches, cleanup.
+test("a moment finished with no clip, one dropped in place, and an ended watch's below-the-bar times", () => {
+  const home = tmp();
+  const { watchId, sess } = makeHome(home);
+  const folder = watchId.split("/")[0];
+  const meta = (id, score) => {
+    fs.mkdirSync(path.join(sess, "moments", id), { recursive: true });
+    fs.writeFileSync(path.join(sess, "moments", id, "meta.json"), JSON.stringify({ peakAt: 0, score, signal: "chat", signalLine: "x", peakIso: new Date().toISOString() }));
+  };
+  // finished, nothing kept: done.json in the moment's run folder (lib/moment-run.mjs finish), video gone
+  meta("n1", 90); fs.writeFileSync(path.join(sess, "moments", "n1", ".taken"), "");
+  const run = path.join(home, "boqo-sniper", "clips", folder, "n1");
+  fs.mkdirSync(run, { recursive: true }); fs.writeFileSync(path.join(run, "done.json"), JSON.stringify({ done: true, clips: [] }));
+  // dropped but not moved (lib/session.mjs dropMoment): .taken, no video, no run folder
+  meta("d1", 60); fs.writeFileSync(path.join(sess, "moments", "d1", ".taken"), "");
+  // still being picked: .taken and its video
+  meta("p1", 90); fs.writeFileSync(path.join(sess, "moments", "p1", ".taken"), ""); fs.writeFileSync(path.join(sess, "moments", "p1", "video.mp4"), "v");
+  // below the bar and told
+  meta("b1", 60); fs.writeFileSync(path.join(sess, "moments", "b1", ".listed"), "");
+
+  let w = store.watch(home, watchId);
+  const by = (id) => w.moments.find((m) => m.id === id);
+  assert.equal(by("n1").state, "noclip");
+  assert.equal(by("d1").state, "dropped");
+  assert.equal(by("p1").state, "picking");
+  assert.ok(by("b1").keepUntil);
+
+  const st = JSON.parse(fs.readFileSync(path.join(sess, "status.json"), "utf8"));
+  fs.writeFileSync(path.join(sess, "status.json"), JSON.stringify({ ...st, state: "ended", moments: "<b>9</b>" }));
+  w = store.watch(home, watchId);
+  assert.equal(by("b1").keepUntil, null); // an ended watch drops nothing more
+  assert.equal(typeof w.momentsCount, "number"); // never raw text from status.json
+});
+
+test("no speech survives the run's cleanup: words.json [] with no pick; clip numbers are numbers", () => {
+  const home = tmp();
+  makeHome(home);
+  const runs = path.join(home, "boqo-clips", "runs");
+  const name = fs.readdirSync(runs).find((n) => fs.existsSync(path.join(runs, n, "words.json")) && !fs.existsSync(path.join(runs, n, "clips.json")));
+  const dir = path.join(runs, name);
+  fs.writeFileSync(path.join(dir, "words.json"), "[]");
+  fs.rmSync(path.join(dir, "asr.json"), { force: true }); fs.rmSync(path.join(dir, "render.json"), { force: true });
+  assert.equal(readRun(home, name).noSpeech, true);
+  fs.writeFileSync(path.join(dir, "words.json"), JSON.stringify([{ w: "Hi", s: 0, e: 0.2 }]));
+  assert.equal(readRun(home, name).noSpeech, false);
+
+  const done = fs.readdirSync(runs).find((n) => fs.existsSync(path.join(runs, n, "clips.json")));
+  const rec = JSON.parse(fs.readFileSync(path.join(runs, done, "clips.json"), "utf8"));
+  rec.clips[0].n = '1" onmouseover="x';
+  fs.writeFileSync(path.join(runs, done, "clips.json"), JSON.stringify(rec));
+  assert.equal(store.run(home, done).clips[0].n, 1);
+  assert.equal(readRun(home, done).noSpeech, false);
 });

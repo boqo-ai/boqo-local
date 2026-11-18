@@ -184,11 +184,13 @@ function watchMeta(w) {
 /** What a moment's row says beside its title (boqo-sniper v0.2.2's moment states; store/sniper.mjs). */
 function momentNote(m) {
   if (m.state === "clipped") return m.signal ?? "";
+  if (m.state === "noclip") return "no clip kept";
+  if (m.state === "dropped") return "dropped to make room";
   if (m.state === "queued") return "waiting for your agent";
   if (m.state === "below") return m.keepUntil ? `below the bar · say “clip it” · kept until at least ${clock(m.keepUntil)}` : "below the bar";
   return "";
 }
-const momentRows = (ms) => `<div class="ls">${ms.map((m) => `<div class="ls-r${m.state === "picking" ? " agent" : m.state === "below" ? " muted" : ""}" data-key="m-${esc(m.id)}"><span class="t">${clock(m.at)}</span><span class="x">${m.state === "picking" ? "Your agent is picking the clip…" : esc(m.title ?? m.signal)}<small>${esc(momentNote(m))}</small></span><span class="r">${m.score ?? ""}</span></div>`).join("")}</div>`;
+const momentRows = (ms) => `<div class="ls">${ms.map((m) => `<div class="ls-r${m.state === "picking" ? " agent" : ["below", "noclip", "dropped"].includes(m.state) ? " muted" : ""}" data-key="m-${esc(m.id)}"><span class="t">${clock(m.at)}</span><span class="x">${m.state === "picking" ? "Your agent is picking the clip…" : esc(m.title ?? m.signal)}<small>${esc(momentNote(m))}</small></span><span class="r">${m.score ?? ""}</span></div>`).join("")}</div>`;
 
 function feedWatch(w) {
   return `<a class="it" href="/w/${w.id.split("/").map(encodeURIComponent).join("/")}" data-nav data-key="w-${esc(w.id)}"><time>${clock(w.startedAt)}</time><div class="it-b">
@@ -253,12 +255,14 @@ function viewRun(r) {
   const rendered = r.clips.filter((c) => c.rendered), pending = r.clips.filter((c) => !c.rendered);
   const src = r.sourceUrl ? r.sourceUrl.replace(/^https?:\/\/(www\.)?/, "") : "";
   const meta = [r.duration ? hms(r.duration) : "", esc(src), r.posted ? `${r.posted} posted` : ""].filter(Boolean).join(" · ");
+  const said = [r.noSpeech ? "No speech heard in this video, so there was nothing to clip." : "", ...(r.notes ?? []).map(esc)].filter(Boolean);
   return `<div class="page">${backLink()}
     <div class="dt"><h1>${esc(r.title)}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}
-      ${r.done ? "" : steps(r.steps)}
+      ${said.map((s) => `<p class="note">${s}</p>`).join("")}
+      ${r.done || r.noSpeech ? "" : steps(r.steps)}
       <div class="acts"><button class="btn btn-q" data-copy="${esc(r.runDir)}">${ic("copy")}Copy folder path</button>
         ${pending.length && r.canRender ? `<button class="btn btn-q" data-render-all>Render ${pending.length} more</button>` : ""}</div></div>
-    ${rendered.length ? `<div class="day">In boqo’s order</div>${rendered.map((c) => clipRow(r, c)).join("")}` : r.clips.length ? "" : `<div class="empty"><span>Clips show up here as your agent picks them.</span></div>`}
+    ${rendered.length ? `<div class="day">In boqo’s order</div>${rendered.map((c) => clipRow(r, c)).join("")}` : r.clips.length || r.noSpeech ? "" : `<div class="empty"><span>Clips show up here as your agent picks them.</span></div>`}
     ${pending.length ? `<div class="day">Picked, not rendered</div>${pending.map((c) => clipRow(r, c)).join("")}` : ""}
   </div>`;
 }
@@ -309,6 +313,7 @@ export function md(text) {
 const HINTS = {
   feed: ["Clip this video: ", "What did I post this week?"],
   run: ["Render the rest", "Why is the first clip first?"],
+  runSilent: ["Why was no speech heard?", "Clip another video: "],
   clip: ["Start this clip 2 seconds earlier", "Write three other titles for this clip", "Post this clip tomorrow at 9:00"],
   watch: ["Stop watching", "Clip the last minute now"],
 };
@@ -323,7 +328,7 @@ function renderChat() {
   const agent = info?.usable ? info : null;
   const ctx = chatContext(r);
   const about = r.view === "run" ? (S.run?.title ? `${S.run.title}${ctx?.clip ? ` · clip ${ctx.clip}` : ""}` : "") : r.view === "watch" ? (S.watch?.channel ?? "") : "Everything on this computer";
-  const hintKey = r.view === "run" ? (ctx?.clip ? "clip" : "run") : r.view;
+  const hintKey = r.view === "run" ? (ctx?.clip ? "clip" : S.run?.noSpeech ? "runSilent" : "run") : r.view;
 
   const msgs = t.messages.map((m, i) => m.role === "you"
     ? `<div class="m-you" data-key="h${i}">${esc(m.text)}</div>`
